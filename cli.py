@@ -1,9 +1,22 @@
-# PyTerm is now the base of ShellOS! I changed everything for it to be suitable for ShellOS.
+# Integration with the daemon.py file for the Linux kernel to run.
+import subprocess
+
+def send_request(request):
+    # Send the request to the daemon and capture the response
+    process = subprocess.Popen(["python", "daemon.py"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    stdout, _ = process.communicate(input=request)
+    return stdout.strip()
+
+# Example usage:
+response = send_request("status")
+print("Response from daemon:", response)
+
+# PyTerm is now the base of PyTermOS! I changed everything for it to be suitable for ShellOS.
 import cmd
 
 class ShellOS(cmd.Cmd):
-    intro = 'Welcome to PyTerm ShellOS version. Type help or ? or help to list commands.'
-    prompt = 'shellos> '
+    intro = 'Welcome to PyTermOS. Type help or ? or help to list commands.'
+    prompt = 'pytermos> '
 
     def do_exit(self, line):
         "Exit the shell. (exit or exit -h)"
@@ -42,7 +55,7 @@ P        y      T    EEEE  R   R M   M
     Python: v3.8
     Version Created: Twenty-Fourth April 2024
     Initial Day Of Creation: Twenty-Third April 2024
-    Operating System: ShellOS v0.1.0-beta
+    Operating System: PyTermOS v0.1.0-beta
             """)
 
     def do_super(self, line):
@@ -80,7 +93,7 @@ class SuperCmd(cmd.Cmd):
         Python: v3.8
         Version Created: Twenty-Fourth April 2024
         Initial Day Of Creation: Twenty-Third April 2024
-        Application: PyTerm-ShellOSVersion v0.1.0-stable
+        Application: PyTermOSCLIOS v0.1.0-beta
         """)
 
     def do_superhelp(self, line):
