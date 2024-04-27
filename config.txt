@@ -1,0 +1,3 @@
+hdmi_ignore_hotplug=1
+
+gpu_mem=20
