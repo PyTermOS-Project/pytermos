@@ -37,12 +37,13 @@ P   P   y y     T    E     R   R MM MM
 PPPP     y      T    EEE   RRRR  M M M
 P        y      T    E     R  R  M   M
 P        y      T    EEEE  R   R M   M
+                            Operating System
 
     PyTerm v0.1.0-stable
     Python: v3.8
     Version Created: Twenty-Fourth April 2024
     Initial Day Of Creation: Twenty-Third April 2024
-    Operating System: PyTermOS v0.1.0-beta
+    Operating System: PyTermOS v0.1.0-alpha
             """)
 
     def do_super(self, line):
@@ -74,13 +75,15 @@ class SuperCmd(cmd.Cmd):
     P   P   y y     T    E     R   R MM MM       
     PPPP     y      T    EEE   RRRR  M M M       
     P        y      T    E     R  R  M   M      
-    P        y      T    EEEE  R   R M   M SUPER MODE
+    P        y      T    EEEE  R   R M   M 
+                                Operating System
+                                        SUPER MODE
 
         PyTerm Supermode v1.0
         Python: v3.8
         Version Created: Twenty-Fourth April 2024
         Initial Day Of Creation: Twenty-Third April 2024
-        Application: PyTermOSCLIOS v0.1.0-beta
+        Application: PyTermOSCLIOS v0.1.0-alpha
         """)
 
     def do_superhelp(self, line):
