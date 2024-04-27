@@ -1,3 +1,6 @@
 hdmi_ignore_hotplug=1
 
 gpu_mem=64
+
+hdmi_group=1     # HDMI mode
+hdmi_mode=16     # 1080p 60 Hz
