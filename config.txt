@@ -1,6 +1,11 @@
-hdmi_ignore_hotplug=1
+hdmi_ignore_hotplug=0
 
 gpu_mem=64
 
-hdmi_group=1     # HDMI mode
-hdmi_mode=16     # 1080p 60 Hz
+hdmi_group=1
+hdmi_mode=16
+
+dtparam=audio=on
+
+dtparam=i2c_arm=on
+dtparam=spi=on
