@@ -1,20 +1,7 @@
-# Integration with the daemon.py file for the Linux kernel to run.
-import subprocess
-
-def send_request(request):
-    # Send the request to the daemon and capture the response
-    process = subprocess.Popen(["python", "daemon.py"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-    stdout, _ = process.communicate(input=request)
-    return stdout.strip()
-
-# Example usage:
-response = send_request("status")
-print("Response from daemon:", response)
-
 # PyTerm is now the base of PyTermOS! I changed everything for it to be suitable for ShellOS.
 import cmd
 
-class ShellOS(cmd.Cmd):
+class PyTermOS(cmd.Cmd):
     intro = 'Welcome to PyTermOS. Type help or ? or help to list commands.'
     prompt = 'pytermos> '
 
@@ -101,4 +88,4 @@ class SuperCmd(cmd.Cmd):
         print("Commands: supertype, superexit, superinfo, superhelp. Add-ons: -h")
 
 if __name__ == '__main__':
-    ShellOS().cmdloop()
+    PyTermOS().cmdloop()

@@ -1,7 +1,6 @@
 import time
 
 def handle_request(request):
-    # Process the request and generate a response
     if request == "status":
         return "Daemon is running."
     elif request == "time":
