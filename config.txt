@@ -1,12 +1,34 @@
-hdmi_ignore_hotplug=0
+# Force HDMI output, even if no HDMI monitor is detected.
+hdmi_force_hotplug=1
 
-gpu_mem=64
-
-hdmi_group=1
-hdmi_mode=16
+# Use HDMI safe mode to increase the chance of your display working correctly.
 hdmi_safe=1
 
-dtparam=audio=on
+# Set a standard resolution to start with, which most HDMI monitors should support.
+hdmi_group=1   # CEA
+hdmi_mode=16   # 1080p 60Hz
 
+# If there are still issues, consider specifying a lower resolution:
+# hdmi_group=2  # DMT (more monitor-focused, less TV-focused)
+# hdmi_mode=35  # 1280x1024 @ 60Hz, a common monitor resolution
+
+# Adjust the GPU memory split depending on your needs:
+gpu_mem=64  # Increase if you run graphics-heavy applications, decrease if not needed.
+
+# Enable I2C and SPI interfaces for peripherals
 dtparam=i2c_arm=on
 dtparam=spi=on
+
+# Enable UART for debugging
+enable_uart=1
+
+# Disable the splash screen for faster boot
+disable_splash=0
+
+# If you are experiencing under-voltage warnings or power issues:
+# Avoid warnings shown at the top right of the display (lightning bolt icon).
+avoid_warnings=1  # Set to 2 to also avoid under-voltage warnings.
+
+# Overclocking settings (be cautious, only use if necessary and you know the risks):
+#arm_freq=1500  # Overclock the CPU on Pi 4 (default is 1500MHz, can try higher like 1750MHz)
+#over_voltage=2  # Required for higher overclocks, increases processor voltage
