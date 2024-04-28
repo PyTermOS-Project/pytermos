@@ -1,1 +1,2 @@
-console=serial0,115200 console=tty1 root=/dev/mmcblk0p2 rootfstype=ext4 elevator=deadline fsck.repair=yes rootwait quiet init=/usr/bin/python3 /Users/macbookair/Documents/GitHub/ShellOS/cli.py
+console=serial0,115200 console=tty1 root=/dev/mmcblk0p2 rootfstype=ext4 elevator=deadline fsck.repair=yes rootwait quiet init=/usr/bin/python3 /boot/cli.py
+
