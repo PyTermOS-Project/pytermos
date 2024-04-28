@@ -4,6 +4,7 @@ gpu_mem=64
 
 hdmi_group=1
 hdmi_mode=16
+hdmi_safe=1
 
 dtparam=audio=on
 
