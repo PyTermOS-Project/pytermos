@@ -32,3 +32,6 @@ avoid_warnings=1  # Set to 2 to also avoid under-voltage warnings.
 # Overclocking settings (be cautious, only use if necessary and you know the risks):
 #arm_freq=1500  # Overclock the CPU on Pi 4 (default is 1500MHz, can try higher like 1750MHz)
 #over_voltage=2  # Required for higher overclocks, increases processor voltage
+
+# Adding initramfs just for fun
+initramfs initramfs.img followkernel
