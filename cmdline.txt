@@ -1,1 +1,1 @@
-console=serial0,115200 console=tty1 root=/dev/mmcblk0p2 rootfstype=ext4 elevator=deadline fsck.repair=yes rootwait quiet init=/usr/local/bin/python3 /boot/cli.py
+console=serial0,115200 console=tty1 root=UUID=54BEF7F1-EE29-31FD-B617-5316F23F13FB rootfstype=ext4 elevator=deadline fsck.repair=yes rootwait quiet init=/usr/local/bin/python3 /boot/cli.py
