@@ -5,7 +5,7 @@ After=local-fs.target
 
 [Service]
 Type=oneshot
-ExecStart=/path/to/your/script.sh
+ExecStart=/ShellOS/boot.sh
 RemainAfterExit=yes
 
 [Install]
