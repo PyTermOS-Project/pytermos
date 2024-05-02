@@ -1,4 +1,8 @@
 import time
+import logging
+
+# Set up logging
+logging.basicConfig(filename='/var/log/mydaemon.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
 
 def handle_request(request):
     if request == "status":
@@ -10,11 +14,11 @@ def handle_request(request):
 
 def daemon_main():
     while True:
-        request = input("Enter a command: ").strip().lower()
-
+        # Example of how you might handle requests
+        request = "time"  # This could be replaced by a mechanism that reads requests from a file or network
         response = handle_request(request)
-        
-        print("Response:", response)
+        logging.info(f"Response: {response}")
+        time.sleep(10)  # Delay for demonstration purposes
 
 if __name__ == "__main__":
     daemon_main()
