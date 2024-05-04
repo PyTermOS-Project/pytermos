@@ -35,3 +35,6 @@ avoid_warnings=1  # Set to 2 to also avoid under-voltage warnings.
 
 # Adding initramfs just for fun
 initramfs initramfs.img followkernel
+
+# Disable WiFi at boot to remove infinite boot
+dtoverlay=disable-wifi
