@@ -39,7 +39,9 @@ Wait until the system starts.
 When the loading ends, you will be greeted by the [PyTerm](markpavlenko.github.io/PyTerm) command prompt.
 # Contributing
 We welcome contributions from the community! Whether it's bug fixes, feature additions, or improvements to documentation, your help is appreciated. Please read CONTRIBUTING.md for details on the process for submitting pull requests to me.
-## License
+# License
 PyTermOS is open source and freely available under the MIT License. See the LICENSE file for more details.
+# Releases page
+To see all the releases, please go to this [https://github.com/MarkPavlenko/PyTermOS/releases](https://github.com/MarkPavlenko/PyTermOS/releases) page.
 ## Contact
 For support, feedback, or queries, please reach me out at markpavlenkos@icloud.com (main) or at markpavlenkos@gmail.com (trash).
