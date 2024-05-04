@@ -1,5 +1,5 @@
 # Contributing to PyTermOS
-Thank you for your interest in contributing to PyTermOS! We welcome contributions from anyone and are grateful for every bit of assistance.
+Thank you for your interest in contributing to PyTermOS! I welcome contributions from anyone and are grateful for every bit of assistance.
 
 This document provides guidelines for contributing to PyTermOS. Following these guidelines helps to communicate that you respect the time of the developers managing and developing this open source project. In return, they should reciprocate that respect in addressing your issue, assessing changes, and helping you finalize your pull requests.
 
