@@ -34,7 +34,7 @@ avoid_warnings=1  # Set to 2 to also avoid under-voltage warnings.
 #over_voltage=2  # Required for higher overclocks, increases processor voltage
 
 # Adding initramfs just for fun
-initramfs initramfs.img followkernel
+initramfs initramfs followkernel
 
 # Disable WiFi at boot to remove infinite boot
 dtoverlay=disable-wifi
