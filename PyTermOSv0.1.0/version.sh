@@ -2,4 +2,4 @@
 clear
 
 
-echo "PyTermOSv0.1.0-test"
+echo "PyTermOSv0.1.0-stable"
