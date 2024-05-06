@@ -1,0 +1,29 @@
+a{
+    text-decoration: wavy;
+    color: black;
+}
+.divelements{
+    display: flex;
+    justify-content: space-between;
+    background-color: rgb(92, 140, 251);
+    border-radius: 18px;
+}
+body{
+    font-family: "Poetsen One", sans-serif;
+    background-color: rgb(182, 203, 251);
+}
+.centerelements{
+    display: flex;
+    flex-direction: column;
+}
+.single{
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+button{
+    border-radius: 18px;
+    font-size: 20px;
+    background-color: rgb(199, 237, 255);
+    border: none;
+}
