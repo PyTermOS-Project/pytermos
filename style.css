@@ -20,10 +20,25 @@ body{
     display: flex;
     justify-content: center;
     align-items: center;
+    flex-direction: column;
 }
 button{
     border-radius: 18px;
     font-size: 20px;
     background-color: rgb(199, 237, 255);
     border: none;
+}
+.big{
+    height: 500px;
+    width: 500px;
+    background:rgb(200, 200, 243);
+    border-radius: 20px;
+    transition: 3s ease-in-out;
+}
+.small{
+    height: 100px;
+    width: 100px;
+    background:rgb(200, 200, 243);
+    border-radius: 20px;
+    transition: 3s ease-in-out;
 }
