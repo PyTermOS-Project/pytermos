@@ -24,10 +24,10 @@ and
 
 Internet connection for initial setup and downloads.
 ## Installation Guide
-Download the latest release of PyTermOS from the Releases page.
+Download the latest release of PyTermOS from the ptos.com website. (in development)
 ### Write the image to an SD card
 Use a tool like RPi-Imager or Balena Etcher. 
-Insert the SD card into your Raspberry Pi.
+Insert the SD card into your Raspberry Pi. For better experience, try opening the tar.gz file and moving all the files on your SD card by yourself.
 ### Boot your Raspberry Pi
 Connect your Raspberry Pi to power and a display.
 Wait until the system starts.
