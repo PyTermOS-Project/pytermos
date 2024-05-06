@@ -42,3 +42,54 @@ button{
     border-radius: 20px;
     transition: 3s ease-in-out;
 }
+button{
+    height: 70px;
+    width: 150px;
+}
+.container {
+    width: 100%;
+    overflow: hidden;
+}
+
+.slider {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+}
+
+.slider img {
+    position: relative;
+    transform: translateX(100%);
+    transition: transform 2.0s ease;
+}
+
+.slider:hover img {
+    transform: translateX(0);
+}
+.fearures{
+    display: flex;
+    align-items: start;
+}
+
+.container2 {
+    width: 100%;
+    overflow: hidden;
+}
+
+.slider2 {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+}
+
+.slider2 h1 {
+    position: relative;
+    transform: translateX(100%);
+    transition: transform 2.0s ease;
+}
+
+.slider2:hover h1 {
+    transform: translateX(0);
+}
