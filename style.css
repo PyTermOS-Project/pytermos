@@ -1,6 +1,7 @@
 a{
     text-decoration: wavy;
     color: black;
+    font-family: "Poetsen One", sans-serif;
 }
 .divelements{
     display: flex;
