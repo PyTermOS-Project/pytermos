@@ -11,6 +11,7 @@ a{
     height: 50px;
     align-items: center;
     border: 3px dotted;
+    width: 450px;
 }
 body{
     font-family: "Poetsen One", sans-serif;
@@ -28,7 +29,7 @@ body{
 }
 button{
     border-radius: 18px;
-    font-size: 20px;
+    font-size: 15px;
     background-color: rgb(199, 237, 255);
     border: none;
 }
@@ -48,7 +49,7 @@ button{
 }
 button{
     height: 50px;
-    width: 154px;
+    width: 140px;
 }
 .container {
     width: 100%;
@@ -65,7 +66,7 @@ button{
 .slider img {
     position: relative;
     transform: translateX(100%);
-    transition: transform 2.0s ease;
+    transition: transform 1.0s ease;
 }
 
 .slider:hover img {
