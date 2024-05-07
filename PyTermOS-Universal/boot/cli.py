@@ -1,3 +1,7 @@
+import logging
+logging.basicConfig(filename="/var/log/pytermos.log", level=logging.DEBUG)
+logging.debug("Starting CLI")
+
 # PyTerm is now the base of PyTermOS! I changed everything for it to be suitable for ShellOS.
 import cmd
 
