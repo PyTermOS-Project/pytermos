@@ -6,8 +6,11 @@ a{
 .divelements{
     display: flex;
     justify-content: space-between;
-    background-color: rgb(92, 140, 251);
-    border-radius: 18px;
+    background: rgb(92, 140, 251);
+    border-radius: 20px;
+    height: 50px;
+    align-items: center;
+    border: 3px dotted;
 }
 body{
     font-family: "Poetsen One", sans-serif;
@@ -44,8 +47,8 @@ button{
     transition: 3s ease-in-out;
 }
 button{
-    height: 70px;
-    width: 150px;
+    height: 50px;
+    width: 154px;
 }
 .container {
     width: 100%;
