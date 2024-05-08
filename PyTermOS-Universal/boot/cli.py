@@ -53,7 +53,7 @@ P        y      T    EEEE  R   R M   M
     Python: v3.8
     Version Created: Twenty-Fourth April 2024
     Initial Day Of Creation: Twenty-Third April 2024
-    Operating System: PyTermOS v0.1.0-alpha
+    Operating System: PyTermOS v0.1.0-stable
             """)
     def do_super(self, line):
         "Activate supermode that lets you use supercommands."
@@ -91,7 +91,7 @@ class SuperCmd(cmd.Cmd):
         Python: v3.8
         Version Created: Twenty-Fourth April 2024
         Initial Day Of Creation: Twenty-Third April 2024
-        Application: PyTermOSCLIOS v0.1.0-alpha
+        Application: PyTermOS v0.1.0-stable
         """)
 
     def do_superhelp(self, line):
