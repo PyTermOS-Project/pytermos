@@ -1,12 +1,25 @@
 #!/usr/bin/python3
 
 import os
+import cmd
 import logging
+import getpass
+
 logging.basicConfig(filename="/var/log/pytermos.log", level=logging.DEBUG)
 logging.debug("Starting CLI")
 
 # PyTerm is now the base of PyTermOS! I changed everything for it to be suitable for ShellOS.
-import cmd
+def do_setpassword(self, line):
+        """Set or reset the super mode password."""
+        if os.path.exists(self.password_file):
+            confirm = input("Password already set. Reset? (y/n): ")
+            if confirm.lower() != 'y':
+                print("Password reset aborted.")
+                return
+        pwd = getpass.getpass("Enter new password: ")
+        with open(self.password_file, 'w') as f:
+            f.write(pwd)  # Consider hashing the password
+        print("Password set successfully.")
 
 class PyTermOS(cmd.Cmd):
     intro = 'Welcome to PyTermOS. Type help or ? or help to list commands.'
