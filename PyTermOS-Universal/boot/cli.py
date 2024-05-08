@@ -49,7 +49,6 @@ P        y      T    EEEE  R   R M   M
     Initial Day Of Creation: Twenty-Third April 2024
     Operating System: PyTermOS v0.1.0-alpha
             """)
-    def
     def do_super(self, line):
         "Activate supermode that lets you use supercommands."
         password = "etsugenfgr"
