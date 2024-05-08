@@ -1,3 +1,4 @@
+import os
 import logging
 logging.basicConfig(filename="/var/log/pytermos.log", level=logging.DEBUG)
 logging.debug("Starting CLI")
@@ -70,7 +71,10 @@ class SuperCmd(cmd.Cmd):
         "Exit from super mode."
         print("Superexiting...")
         return True
-
+    def do_shutdown(self, line):
+        "Shutdown the system."
+        print("Shutting down...")
+        os.system()
     def do_superinfo(self, line):
         "Show information about super mode."
         print("""
