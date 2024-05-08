@@ -16,7 +16,10 @@ class PyTermOS(cmd.Cmd):
             print("Exit is a command that sends you back to bash. Basically it just ends the program.")
         else:
             return True
-
+    def do_shutdown(self, line):
+        "Shutdown the system."
+        print("Shutting down...")
+        os.system()
     def do_help(self, line):
         "Show this help message."
         if line.strip() == "-h":
@@ -71,10 +74,6 @@ class SuperCmd(cmd.Cmd):
         "Exit from super mode."
         print("Superexiting...")
         return True
-    def do_shutdown(self, line):
-        "Shutdown the system."
-        print("Shutting down...")
-        os.system()
     def do_superinfo(self, line):
         "Show information about super mode."
         print("""
