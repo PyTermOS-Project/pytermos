@@ -1,3 +1,5 @@
+#!/usr/bin/python3
+
 import os
 import logging
 logging.basicConfig(filename="/var/log/pytermos.log", level=logging.DEBUG)
