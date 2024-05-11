@@ -1,0 +1,10 @@
+#!/usr/bin/python3
+
+import cmd
+
+def do_exit(self, line):
+        "Exit the shell. (exit or exit -h)"
+        if line.strip() == "-h":
+            print("Exit is a command that sends you back to bash. Basically it just ends the program.")
+        else:
+            return True

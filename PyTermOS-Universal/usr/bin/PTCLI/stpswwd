@@ -1,0 +1,17 @@
+#!/usr/bin/python3
+
+import getpass
+import cmd
+import os
+
+def do_setpassword(self, line):
+        """Set or reset the super mode password."""
+        if os.path.exists(self.password_file):
+            confirm = input("Password already set. Reset? (y/n): ")
+            if confirm.lower() != 'y':
+                print("Password reset aborted.")
+                return
+        pwd = getpass.getpass("Enter new password: ")
+        with open(self.password_file, 'w') as f:
+            f.write(pwd)  # Consider hashing the password
+        print("Password set successfully.")

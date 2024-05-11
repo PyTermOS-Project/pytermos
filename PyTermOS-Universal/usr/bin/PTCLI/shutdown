@@ -1,0 +1,9 @@
+#!/usr/bin/python3
+
+import cmd
+import os
+
+def do_shutdown(self, line):
+        "Shutdown the system."
+        print("Shutting down...")
+        os.system()
