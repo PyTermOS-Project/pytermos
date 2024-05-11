@@ -2,16 +2,21 @@
 
 import os
 import cmd
-import logging
 import getpass
-
-logging.basicConfig(filename="/var/log/pytermos.log", level=logging.DEBUG)
-logging.debug("Starting CLI")
-
 class PyTermOS(cmd.Cmd):
     intro = 'Welcome to PyTermOS. Type help or ? or help to list commands.'
     prompt = 'pytermos> '
 
+    def do_exit(self, line):
+        "Exit the shell. (exit or exit -h)"
+        if line.strip() == "-h":
+            print("Exit is a command that sends you back to bash. Basically it just ends the program.")
+        else:
+            return True
+    def do_shutdown(self, line):
+        "Shutdown the system."
+        print("Shutting down...")
+        os.system()
     def do_help(self, line):
         "Show this help message."
         if line.strip() == "-h":
