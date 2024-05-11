@@ -1,0 +1,86 @@
+#!/usr/bin/python3
+
+import os
+import cmd
+import hashlib
+import getpass
+
+# Function to hash passwords
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+# Function to verify password
+def verify_password(stored_password, provided_password):
+    return stored_password == hash_password(provided_password)
+
+# Class for the main command interface
+class PyTermOS(cmd.Cmd):
+    intro = 'Welcome to PyTermOS. Type help or ? or help to list commands.'
+    prompt = 'pytermos> '
+
+    def __init__(self):
+        super().__init__()
+        self.password_file = "/etc/pytermos_pwd.txt"
+        self.load_password()
+
+    def load_password(self):
+        try:
+            with open(self.password_file, 'r') as file:
+                self.stored_password = file.read().strip()
+        except FileNotFoundError:
+            # Default password if not set
+            self.stored_password = hash_password("etsugenfgr")
+
+    def do_setpassword(self, line):
+        "Set a new password for super mode."
+        new_password = getpass.getpass("Enter new password:")
+        with open(self.password_file, 'w') as file:
+            file.write(hash_password(new_password))
+        self.load_password()
+        print("Password changed successfully.")
+
+    def do_super(self, line):
+        "Activate supermode that lets you use supercommands."
+        enter = getpass.getpass("Password: ")
+        if verify_password(self.stored_password, enter):
+            print("You are now in super mode. Type 'superhelp' for help.")
+            return SuperCmd().cmdloop()
+        else:
+            print("PyTerm error: wrong password.")
+
+class SuperCmd(cmd.Cmd):
+    prompt = 'SuperMode> '
+
+    def do_supertype(self, line):
+        "Echo back the input string twice."
+        print(line + line)
+
+    def do_superexit(self, line):
+        "Exit from super mode."
+        print("Superexiting...")
+        return True
+
+    def do_superinfo(self, line):
+        "Show information about super mode."
+        print("""
+    PPPP   y   y  TTTTT  EEEE  RRRR  M   M 
+    P   P   y y     T    E     R   R MM MM       
+    PPPP     y      T    EEE   RRRR  M M M       
+    P        y      T    E     R  R  M   M      
+    P        y      T    EEEE  R   R M   M 
+                                Operating System
+                                        SUPER MODE
+
+        PyTerm Supermode v1.0
+        Python: v3.8
+        Version Created: Twenty-Fourth April 2024
+        Initial Day Of Creation: Twenty-Third April 2024
+        Application: PyTermOSCLIOS v0.1.0-alpha
+        """)
+
+    def do_superhelp(self, line):
+        "Show help for super mode commands."
+        print("Commands: supertype, superexit, superinfo, superhelp. Add-ons: -h")
+
+if __name__ == '__main__':
+    PyTermOS().cmdloop()
