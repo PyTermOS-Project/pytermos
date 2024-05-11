@@ -32,7 +32,7 @@ class PyTermOS(cmd.Cmd):
             self.stored_password = hash_password("etsugenfgr")
 
     def do_setpassword(self, line):
-        "Set a new password for super mode."
+        "Set a new password for super mode. Abort if you want to use basic one (etsugenfgr)"
         new_password = getpass.getpass("Enter new password:")
         with open(self.password_file, 'w') as file:
             file.write(hash_password(new_password))
