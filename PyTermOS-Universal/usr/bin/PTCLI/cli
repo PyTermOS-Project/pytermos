@@ -15,28 +15,29 @@ def verify_password(stored_password, provided_password):
 
 # Class for the main command interface
 class PyTermOS(cmd.Cmd):
-    intro = 'Welcome to PyTermOS. Type help or ? or help to list commands.'
+    intro = 'Welcome to PyTermOS. Type help or ? to list commands.'
     prompt = 'pytermos> '
 
     def __init__(self):
         super().__init__()
-        self.password_file = "/usr/bin/PTCLI/passwd.txt"
-        self.load_password()
+        self.stored_password = os.getenv('PYTERMOS_PASSWORD', hash_password('etsugenfgr'))
 
-    def load_password(self):
-        try:
-            with open(self.password_file, 'r') as file:
-                self.stored_password = file.read().strip()
-        except FileNotFoundError:
-            # Default password if not set
-            self.stored_password = hash_password("etsugenfgr")
+    def do_exit(self, line):
+        "Exit the shell. (exit or exit -h)"
+        if line.strip() == "-h":
+            print("Exit is a command that sends you back to bash. Basically it just ends the program.")
+        else:
+            return True
+
+    def do_shutdown(self, line):
+        "Shutdown the system."
+        print("Shutting down...")
+        os.system("shutdown now")
 
     def do_setpassword(self, line):
-        "Set a new password for super mode. Abort if you want to use basic one (etsugenfgr)"
+        "Set a new password for super mode."
         new_password = getpass.getpass("Enter new password:")
-        with open(self.password_file, 'w') as file:
-            file.write(hash_password(new_password))
-        self.load_password()
+        os.environ['PYTERMOS_PASSWORD'] = hash_password(new_password)
         print("Password changed successfully.")
 
     def do_super(self, line):
