@@ -20,7 +20,7 @@ class PyTermOS(cmd.Cmd):
 
     def __init__(self):
         super().__init__()
-        self.password_file = "/etc/pytermos_pwd.txt"
+        self.password_file = "/usr/bin/PTCLI/passwd.txt"
         self.load_password()
 
     def load_password(self):
