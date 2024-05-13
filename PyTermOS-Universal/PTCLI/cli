@@ -4,7 +4,7 @@ import os
 import cmd
 import hashlib
 import getpass
-from transformers import GPT2LMHeadModel, GPT2Tokenizer
+from simpletransformers
 
 # Function to hash passwords
 def hash_password(password):
