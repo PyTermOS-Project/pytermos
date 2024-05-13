@@ -11,7 +11,7 @@ Perfect for students and enthusiasts looking to delve into the workings of a Lin
 ## PyTerm CLI Interface.
 PyTerm CLI Interface is very easy to use. Especially for people who think bash is hard to learn.
 To see the commands, you can type ? or help in the PyTerm CLI Interface.
-If you need all the usage and commands, please go to [docs.pytermos.com](docs.pytermos.com)
+If you need all the usage and commands, please go to [docs.pytermos.com/install.html](docs.pytermos.com)/install.html
 ## Community Driven
 Open to contributions and improvements. You can fork or download the .zip file to make changes.
 # Installation
@@ -24,7 +24,7 @@ and
 
 Internet connection for initial setup and downloads.
 ## Installation Guide
-Download the latest release of PyTermOS from the (pytermos.com)[pytermos.com] website.
+Download the latest release of PyTermOS from the (pytermos.com/downloads.html)[pytermos.com/downloads.html] website.
 ### Write the image to an SD card
 Download the .tar.gz file and extract all the files.
 Put all the files on your SD card.
