@@ -4,7 +4,7 @@ import os
 import cmd
 import hashlib
 import getpass
-from simpletransformers
+from simpletransformers.language_generation import LanguageGenerationModel
 
 # Function to hash passwords
 def hash_password(password):
