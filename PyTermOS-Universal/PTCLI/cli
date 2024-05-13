@@ -4,6 +4,7 @@ import os
 import cmd
 import hashlib
 import getpass
+import openai
 
 # Function to hash passwords
 def hash_password(password):
@@ -28,6 +29,8 @@ class PyTermOS(cmd.Cmd):
             print("Exit is a command that sends you back to bash. Basically it just ends the program.")
         else:
             return True
+    def do_ai(self, line):
+        "Start OpenAI's GPT-3.5 model."
 
     def do_shutdown(self, line):
         "Shutdown the system."
