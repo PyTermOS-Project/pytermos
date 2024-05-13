@@ -4,7 +4,7 @@ import os
 import cmd
 import hashlib
 import getpass
-from simpletransformers.language_generation import LanguageGenerationModel
+import requests
 
 # Function to hash passwords
 def hash_password(password):
@@ -31,11 +31,15 @@ class PyTermOS(cmd.Cmd):
             return True
     def do_ai(self, line):
         "Start OpenAI's GPT-2 model"
-        tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
-        model = GPT2LMHeadModel.from_pretrained("gpt2")
-        inputs = tokenizer.encode("Here is some text to encode:", return_tensors="pt")
-        outputs = model.generate(inputs, max_length=100)
-        print(tokenizer.decode(outputs[0], skip_special_tokens=True))
+        url = "https://api.openai.com/v1/engines/davinci-codex/completions"
+        headers = {
+        "Authorization": "Bearer sk-proj-N6eA4mXmWNJJnk1QpSFST3BlbkFJI0DqMFwg3m8l2S8sjFav"
+        }
+        data = {
+        "max_tokens": 100
+        }
+        response = requests.post(url, headers=headers, json=data)
+        return response.json()['choices'][0]['text']
 
     def do_shutdown(self, line):
         "Shutdown the system."
