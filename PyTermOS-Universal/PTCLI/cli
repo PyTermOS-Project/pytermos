@@ -4,7 +4,7 @@ import os
 import cmd
 import hashlib
 import getpass
-from openai import OpenAI
+from transformers import GPT2LMHeadModel, GPT2Tokenizer
 
 # Function to hash passwords
 def hash_password(password):
@@ -30,8 +30,7 @@ class PyTermOS(cmd.Cmd):
         else:
             return True
     def do_ai(self, line):
-        "Start OpenAI's GPT-3.5 model."
-
+        "Start OpenAI's GPT-2 model"
     def do_shutdown(self, line):
         "Shutdown the system."
         print("Shutting down...")
