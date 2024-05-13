@@ -49,7 +49,8 @@ To see all the releases, please go to this [https://github.com/MarkPavlenko/PyTe
 For support, feedback, or queries, please reach me out at markpavlenkos@icloud.com (main) or at markpavlenkos@gmail.com (trash).
 # License
 PyTermOS is licensed under the MIT license.
-# The pytermos.com website has been transfered to another repo.
+# The pytermos.com website has been transfered to another repo on 12 May 2024.
 [Real pytermos.com website repo](https://github.com/MarkPavlenko/PyTermOSWeb)
 [docs.pytermos.com subdomain website repo](https://github.com/MarkPavlenko/PyTermOSDocs)
 [forums.pytermos.com subdomain website repo](https://github.com/MarkPavlenko/PyTermOSForums)
+### S0rry!

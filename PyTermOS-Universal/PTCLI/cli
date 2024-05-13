@@ -31,6 +31,12 @@ class PyTermOS(cmd.Cmd):
             return True
     def do_ai(self, line):
         "Start OpenAI's GPT-2 model"
+        tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+        model = GPT2LMHeadModel.from_pretrained("gpt2")
+        inputs = tokenizer.encode("Here is some text to encode:", return_tensors="pt")
+        outputs = model.generate(inputs, max_length=100)
+        print(tokenizer.decode(outputs[0], skip_special_tokens=True))
+
     def do_shutdown(self, line):
         "Shutdown the system."
         print("Shutting down...")
