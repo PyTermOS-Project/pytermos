@@ -120,8 +120,8 @@ skip=23
 set -C
 umask=`umask`
 umask 77
-tmpfile=`tempfile -p gztmp -d /tmp` || exit 1
-if tail +$skip "$0" | /bin/bzip2 -cd >> $tmpfile; then
+tmpfile=`mktemp ${TMPDIR:-/tmp}/bzexe.XXXXXXXXXX` || exit 1
+if tail +$skip "$0" | /bin/bzip2 -cd >> "$tmpfile"; then
   umask $umask
   /bin/chmod 700 $tmpfile
   prog="`echo $0 | /bin/sed 's|^.*/||'`"

@@ -1,0 +1,52 @@
+#!/bin/bash
+
+INIT="$(ps --no-headers -o comm 1)"
+
+if [ "$(id -u)" != "0" ]; then
+    echo "Please run with 'sudo': sudo cancel-rename USER" >&2
+    exit 1
+fi
+
+if [ "$(raspi-config nonint get_boot_cli)" -ne 0 ]; then
+    if [ "$1" = "root" ] || ! getent passwd "$1" >/dev/null; then
+        echo "Please specify default user: sudo cancel-rename USER" >&2
+        exit 1
+    fi
+    IMG_VER="$(grep -s -m1 -o '[[:digit:]]\{4\}-[[:digit:]]\{2\}-[[:digit:]]\{2\}' /etc/rpi-issue)"
+    if [ -f /var/lib/userconf-pi/autologin ] || [ "$IMG_VER" == "2022-04-04" ]; then
+        SUDO_USER="$1" raspi-config nonint do_boot_behaviour B4
+    else
+        SUDO_USER="$1" raspi-config nonint do_boot_behaviour B3
+    fi
+
+    # remove the autostart for the wizard
+    rm -f /etc/xdg/autostart/piwiz.desktop
+
+    # set up a self-deleting autostart to delete the wizard user
+    cat <<- EOF > /etc/xdg/autostart/deluser.desktop
+	[Desktop Entry]
+	Type=Application
+	Name=Delete Wizard User
+	NoDisplay=true
+	Exec=sudo sh -c 'userdel -r rpi-first-boot-wizard; rm -f /etc/sudoers.d/010_wiz-nopasswd /etc/xdg/autostart/deluser.desktop'
+	EOF
+else
+    if [ -f /var/lib/userconf-pi/autologin ]; then
+        SUDO_USER="$1" raspi-config nonint do_boot_behaviour B2
+    else
+        SUDO_USER="$1" raspi-config nonint do_boot_behaviour B1
+    fi
+fi
+
+rm -f /var/lib/userconf-pi/autologin
+rm -f /etc/ssh/sshd_config.d/rename_user.conf
+
+systemctl --quiet disable userconfig
+systemctl --quiet enable getty@tty1
+
+if [ "$INIT" = "systemd" ]; then
+    if systemctl --quiet is-active ssh; then
+        systemctl --quiet reload ssh
+    fi
+    systemctl --quiet --no-block start getty@tty1
+fi
