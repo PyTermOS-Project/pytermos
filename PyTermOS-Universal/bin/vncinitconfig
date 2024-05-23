@@ -1,0 +1,1558 @@
+#!/bin/sh
+
+# Copyright © RealVNC Ltd.  All rights reserved.
+
+usage()
+{
+    echo "VNC® Server Setup Utility 7.5.1 (r50075)"
+    echo "Copyright © RealVNC Ltd."
+    echo "See https://www.realvnc.com for information on VNC."
+    echo
+    echo "Usage: vncinitconfig ACTION..."
+    echo
+    echo "Actions:"
+    echo "  -install-defaults    Perform all steps below supported for this platform"
+    echo "  -pam                 Enable system authentication using PAM"
+    echo "  -xstartup            Create default /etc/vnc/xstartup"
+    echo "  -config              Create default /etc/vnc/config"
+    echo "  -virtual-pulse-conf  Create default /etc/vnc/pulse/daemon.conf"
+    echo "  -virtual-xorg-conf   Create /etc/X11/vncserver-virtual.conf"
+    echo "  -keygen              Regenerate private key"
+    echo "  -licensing           Clear up old licensing files after upgrade"
+    echo "  -service-daemon      Install init file for VNC Server in Service Mode daemon"
+    echo "  -virtual-daemon      Install init file for VNC Server in Virtual Mode daemon"
+    echo "  -enable-print        Set up CUPS for VNC print backend"
+    echo "  -firewalld           Install firewalld service config for VNC servers"
+    echo "  -register-SELinux    Set up SELinux modules to allow services to work normally"
+    echo "                       This is not performed as part of install-defaults"
+    echo "  -enable-system-xorg  Enables SystemXorg for virtual mode"
+    echo "                       This is not performed as part of install-defaults"
+    echo "  -disable-system-xorg Disables SystemXorg for virtual mode"
+    echo "                       This is not performed as part of install-defaults"
+}
+
+# Set sane and safe umask or nothing below works
+umask 022
+
+# Initialise the X Server configuration file location. NB/ We omit paths based
+# on environment variables that don't exist and also per-user config files.
+init_xserver_config_path()
+{
+    if [ -z "$HOSTNAME" ]; then
+        hn=`uname -n`
+    else
+        hn=$HOSTNAME
+    fi
+
+    paths="/etc/X11/xorg.conf /usr/local/etc/X11/xorg.conf"
+    if [ -n "$XF86CONFIG" ]; then
+        paths="$paths $XF86CONFIG /etc/X11/$XF86CONFIG /usr/X11R6/etc/X11/$XF86CONFIG"
+    fi
+    paths="$paths /etc/X11/XF86Config-4 /etc/X11/XF86Config /etc/XF86Config /usr/X11R6/etc/X11/XF86Config.$hn /usr/X11R6/etc/X11/XF86Config-4 /usr/X11R6/etc/X11/XF86Config $paths /usr/X11R6/lib/X11/XF86Config.$hn /usr/X11R6/lib/X11/XF86Config-4 /usr/X11R6/lib/X11/XF86Config"
+
+    for xserver_config_path in $paths; do
+        [ -r "$xserver_config_path" ] && return
+    done
+    xserver_config_path=
+}
+
+
+# Get an attribute either using xset, or from the X Server config file located
+# using the above function. The variable $attr_value is set to the value of the
+# attribute. The variable $attr_location indicates where the value comes from.
+get_attr_from_xserver_config()
+{
+    xset_pattern="$1"       # Look for this in "xset q" output
+    config_pattern="$2"     # Look for this in $xserver_config_path
+    attr_location=
+    attr_value=
+
+    # First try to get the information via "xset q"; this will work if
+    # we're running under a properly-configured X Server. Solaris awk
+    # doesn't handle variables introduced with -v, so we have to let the
+    # shell handle variable expansion, which is a little uglier.
+    if [ -n "$xset_pattern" ]; then
+        attr_value=`
+            xset q 2>/dev/null |
+            $awk "BEGIN { found = 0 }
+                  /^$xset_pattern\$/ { found = 1; next }
+                  found == 1  { sub(\"^ *\",\"\"); print; exit }"`
+        if [ -n "$attr_value" ]; then
+            attr_location="xset"
+            return
+        fi
+    fi
+
+    # If that fails, try to get the information from the X Server config file.
+    # NB/ The triple backslashes are required because the ` invokes a subshell
+    # that reduces \\\$1 to \$1, which is then reduced to $1 before passing it
+    # to awk.
+    if [ -n "$xserver_config_path" -a -n "$config_pattern" ]; then
+        attr_value=`
+            $awk "BEGIN { first=1 }
+                  \\\$1==\"$config_pattern\" {
+                      gsub(/^\"|\"\$/, \"\", \\\$2);
+                      printf \"%s%s\", (first==1) ? \"\" : \",\", \\\$2;
+                      first = 0
+                }" $xserver_config_path`
+        if [ -n "$attr_value" ]; then
+            attr_location="$xserver_config_path"
+            return
+        fi
+    fi
+}
+
+strip_user_specfic_paths()
+{
+    # Filter user-specific paths
+    sed -e 's%\(^\|,\)'$HOME'[^,]*%%g' | sed -e 's%^,%%'
+}
+
+
+# Copy $1 to $1.tmp
+backup()
+{
+    [ -f $1 ] && { mv $1 $1.tmp && cp -p $1.tmp $1; }
+}
+
+
+# If $1.tmp exists, compare it to $1. If they differ, print a message and move
+# $1.tmp to $1.old, otherwise replace the original file with the backup (so that
+# all file attributes are preserved if possible)
+verify()
+{
+    if [ -f $1.tmp ]; then
+        if diff $1 $1.tmp >/dev/null 2>&1; then
+            mv $1.tmp $1
+        else
+            mv $1.tmp $1.old
+            echo "Original config file \"$1.old\" preserved"
+        fi
+    fi
+}
+
+
+# mktemp isn't guaranteed by POSIX, and isn't available on AIX 5.2, nor on stock
+# HP-UX, nor on Solaris before 5.10.  mktemp2 takes as its first argument a
+# mktemp format string, and as its second argument a fallback name.
+mktemp2()
+{
+  if which mktemp >/dev/null 2>&1; then
+    mktemp "$1"
+  else
+    echo "$2"
+  fi
+}
+
+
+# Asks the user a yes/no question and waits for a response. Takes the question
+# text as its only argument. The user must enter either "y" or "n" to proceed.
+confirm()
+{
+  while true; do
+    read -r -p "$1" RESPONSE
+    case "$RESPONSE" in
+      [yY]) return 0 ;;
+      [nN]) return 1 ;;
+      *) echo "Please enter y or n"
+    esac
+  done
+}
+
+
+# Set options to be applied at installation time.
+# The exact set of options is platform-dependent.
+set_install_options()
+{
+    # Basic options for most platforms
+    init_pam=1
+    init_xstartup=1
+    init_config=1
+    init_virtual_pulse_conf=1
+    init_virtual_xorg_conf=1
+    init_keygen=1
+    init_licensing=1
+    init_updates=1
+    init_service_daemon=1;
+    init_virtual_daemon=1;
+    init_print=1
+    init_icons=1
+    init_firewalld=1
+    init_seLinux=0
+    enable_system_xorg=0
+    disable_system_xorg=0
+
+    # Tweaks for specific platforms
+    SYSNAME=`uname -s`
+    case "$SYSNAME" in
+        AIX)
+            # Automatic PAM configuration not supported on AIX
+            init_pam=0
+            ;;
+    esac
+}
+
+
+init_pam=0
+init_xstartup=0
+init_config=0
+init_virtual_pulse_conf=0
+init_virtual_xorg_conf=0
+init_keygen=0
+init_licensing=0
+init_updates=0
+init_service_daemon=0
+init_virtual_daemon=0
+init_print=0
+init_icons=0
+init_firewalld=0
+init_seLinux=0
+enable_system_xorg=0
+disable_system_xorg=0
+inittype_arg=
+
+
+# Sanitise the environment in case we're running under su or sudo
+# without the - or -i options, respectively.
+HOME=~root
+
+
+# Parse command-line parameters
+for i in $@; do
+    case $i in
+        "--install-defaults" | "-install-defaults")
+            set_install_options
+            ;;
+        "--pam" | "-pam")
+            init_pam=1
+            ;;
+        "--xstartup" | "-xstartup")
+            init_xstartup=1
+            ;;
+        "--config" | "-config")
+            init_config=1
+            ;;
+        "--virtual-pulse-conf" | "-virtual-pulse-conf")
+            init_virtual_pulse_conf=1
+            ;;
+        "--virtual-xorg-conf" | "-virtual-xorg-conf")
+            init_virtual_xorg_conf=1
+            ;;
+        "--keygen" | "-keygen")
+            init_keygen=1
+            ;;
+        "--licensing" | "-licensing")
+            init_licensing=1
+            ;;
+        "--updates" | "-updates")
+            init_updates=1
+            ;;
+        --init-type=* | -init-type=* )
+            inittype_arg=`echo "$i" | sed -e 's/^-\{0,1\}-init-type=//'`
+            ;;
+        "--service-daemon" | "-service-daemon")
+            init_service_daemon=1;
+            ;;
+        "--virtual-daemon" | "-virtual-daemon")
+            init_virtual_daemon=1;
+            ;;
+        "--enable-print" | "-enable-print")
+            init_print=1
+            ;;
+        "--install-icons" | "-install-icons")
+            init_icons=1
+            ;;
+        "--firewalld" | "-firewalld")
+            init_firewalld=1
+            ;;
+        "--register-SELinux" | "-register-SELinux")
+            init_seLinux=1
+            ;;
+        "--enable-system-xorg" | "-enable-system-xorg")
+            enable_system_xorg=1
+            ;;
+        "--disable-system-xorg" | "-disable-system-xorg")
+            disable_system_xorg=1
+            ;;
+        "--help" | "-help")
+            usage
+            exit
+            ;;
+    esac
+done
+
+if [ "$init_pam" = "0" -a "$init_config" = "0" -a "$init_xstartup" = "0" \
+     -a "$init_virtual_pulse_conf" = "0" -a "$init_virtual_xorg_conf" = "0" \
+     -a "$init_keygen" = "0" -a "$init_licensing" = "0" \
+     -a "$init_service_daemon" = "0" -a "$init_virtual_daemon" = "0" \
+     -a "$init_print" = "0" -a "$init_icons" = "0" -a "$init_seLinux" = "0" \
+     -a "$enable_system_xorg" = "0" -a "$disable_system_xorg" = "0" \
+     -a "$init_firewalld" = 0 ]; then
+    usage
+    exit 1
+fi
+
+# Set up defaults and platform-specific overrides.
+### dirs and utils:
+: ${ETCVNCDIR=/etc/vnc}
+bin=/usr/local/bin
+libvnc=/usr/local/lib/vnc
+share=/usr/share
+sharevnc=$share/vnc
+awk=awk
+which_str=which
+### moduledirname is used for network installs
+moduledirname=`dirname "$0"`
+moduledirname=`(cd "$moduledirname" && pwd)`
+installed_binary()
+{
+  if [ -f $bin/$1 ]; then
+    echo $bin/$1
+  elif [ -f $moduledirname/$1 ]; then
+    echo $moduledirname/$1
+  elif which $1 >/dev/null 2>&1; then
+    which $1 2>&1;
+    echo "WARNING: $1 not installed, but using version from \$PATH" >&2
+  else
+    echo $bin/$1
+  fi
+}
+
+SYSNAME=`uname -s`
+case "$SYSNAME" in
+    Linux)
+        libvnc=/usr/lib/vnc
+        bin=/usr/bin
+
+        # We make sure we find systemctl, chkconfig, and update-rc.d:
+        PATH=$PATH:/sbin:/usr/sbin
+        ;;
+    SunOS)
+        # We modify the path in order to make sure we find xset and svcadm:
+        PATH=$PATH:/usr/openwin/bin:/usr/sbin
+        awk=nawk
+        which() { ksh whence -p "$@"; }
+        which_str="ksh whence -p"
+
+        # On Solaris, packages are "relocatable", ie with pkgadd -a none -d *.pkg
+        # they can be installed to a custom directory - so we do an extra check
+        # to find where the target directory is
+        bin="$moduledirname"
+        if [ -d "$moduledirname/../lib/vnc" ]; then
+          libvnc=`(cd "$moduledirname/../lib/vnc" && pwd)`
+        fi
+        ;;
+    HP-UX)
+        # We modify the path in order to make sure we find xset:
+        PATH=$PATH:/usr/bin/X11
+        which() { command -v "$@"; }
+        which_str="command -v"
+        ;;
+    AIX)
+        if [ "$init_pam" = "1" ]; then
+            echo "Automatic PAM configuration not supported on this platform"
+            init_pam=0
+        fi
+        ;;
+    FreeBSD)
+        ETCVNCDIR=/usr/local/etc/vnc
+        libvnc=/usr/local/libexec/vnc
+        share=/usr/local/share
+        sharevnc=$share/vnc
+        ;;
+    *)
+        echo "Unknown platform"
+        exit 1
+        ;;
+esac
+
+# Required for appindicator support
+## Note that -e fails on some solaris machines {file exists check}
+## so we have to use -f                        {is regular file check}
+if [ "$init_icons" = 1 ]; then
+  mkdir -p "$share/icons/hicolor/48x48/apps/"
+  for f in $moduledirname/icons/vnc*.png ; do
+    filename=`basename "$f"`
+    if [ -f "$f" ] && \
+       [ ! -f "$share/icons/hicolor/48x48/apps/$filename" ]; then
+      echo "Copying $moduledirname/icons/$filename to $share/icons/hicolor/48x48/apps/$filename"
+      cp -f "$moduledirname/icons/$filename" "$share/icons/hicolor/48x48/apps/$filename"
+      chmod -f 0444 "$share/icons/hicolor/48x48/apps/$filename"
+    fi
+  done
+fi
+
+# Set up defaults and platform-specific overrides.
+cups_backend_dir=/usr/lib/cups/backend
+if [ "$SYSNAME" = FreeBSD ]; then
+    cups_backend_dir=/usr/local/libexec/cups/backend
+fi
+
+if [ "$init_print" = 1 ]; then
+    # Needed for 64-bit version of RHEL4, since CUPS is configured
+    # to use printer backends in /usr/lib64... instead of /usr/lib...
+    if [ "$SYSNAME" = Linux ]; then
+        cups64_backend_dir=/usr/lib64/cups/backend
+        if [ -d "$cups64_backend_dir" ]; then
+            # On some systems, lib and lib64 are the same location, so
+            # avoid creating the symlink if the file already exists in lib64.
+            if [ '!' -e "$cups64_backend_dir/vnc" ]; then
+                ln -s "$cups_backend_dir/vnc" "$cups64_backend_dir/vnc"
+            fi
+        fi
+    fi
+
+    chmod 0700 "$cups_backend_dir/vnc"
+    if [ "$SYSNAME" = SunOS ]; then
+        sun_cups_dir=/opt/sfw/cups/lib/cups
+        solaris_ver=`uname -r | sed 's/^5\.//'`
+        if [ -d "$sun_cups_dir" ]; then
+            ln -s "$cups_backend_dir/vnc" "$sun_cups_dir/backend/vnc"
+        elif [ "$solaris_ver" -ge 11 ]; then
+            : # It's OK, Solaris 11 uses the normal /usr/lib/cups/backend
+        else
+            echo "CUPS installation not found at $sun_cups_dir."
+            echo "Please install CUPS from the Solaris Companion CD, then run"
+            echo "  vncinitconfig -enable-print"
+        fi
+    fi
+fi
+
+# Set up defaults and platform-specific overrides.
+pamconfig="auth required pam_unix.so
+account required pam_unix.so"
+username=\$USER
+case "$SYSNAME" in
+    SunOS)
+        username=\$LOGNAME
+        ;;
+    HP-UX)
+        username=\$LOGNAME
+        ;;
+esac
+
+# Initialise the PAM configuration.
+if [ "$init_pam" = "1" ]; then
+
+    # The "pamcomment" string here should not be changed, because the uninstall
+    # scripts on all our platforms hunt for it in order to know we're removing
+    # the correct files.  For VNC 4.6.x and earlier, pamcomment was "Default VNC
+    # Enterprise Edition PAM configuration".
+    pamcomment="# Default VNC Server PAM configuration."
+    pamwarning="# This file is automatically generated. DO NOT EDIT.
+# To make changes, create a file named vncserver.custom in this
+# directory and create or edit $ETCVNCDIR/config.d/common.custom to
+# add 'PamApplicationName=vncserver.custom'"
+    pamlocation=/etc
+
+    case "$SYSNAME" in
+        Linux)
+            # This hack is needed to work around the fact that there are 101 places
+            # libraries live on Linux, unguessable, and not even symlinked from some
+            # traditional location like /lib or /usr/lib.
+            ldd_line=`ldd \`installed_binary Xvnc\` 2>/dev/null | grep '/libc\.' | head -n 1`
+            libsecurity=`dirname \`echo "$ldd_line" | $awk '{ if ($2 == "=>") print $3}'\` 2>/dev/null`/security
+            if [ -f $libsecurity/pam_selinux.so ]; then pamconfig="$pamconfig
+session required pam_selinux.so"; fi
+            if [ -f $libsecurity/pam_umask.so ]; then pamconfig="$pamconfig
+session optional pam_umask.so"; fi
+            if [ -f $libsecurity/pam_limits.so ]; then pamconfig="$pamconfig
+session optional pam_limits.so"; fi
+            pamconfig="$pamconfig
+session required pam_unix.so"
+            if [ -f $libsecurity/pam_loginuid.so ]; then pamconfig="$pamconfig
+session optional pam_loginuid.so"; fi
+            if [ -f $libsecurity/pam_systemd.so ]; then pamconfig="$pamconfig
+session optional pam_systemd.so"; fi
+            if [ -f $libsecurity/pam_env.so ]; then pamconfig="$pamconfig
+session optional pam_env.so"; fi
+            ;;
+        SunOS)
+            if [ -f /usr/lib/security/pam_unix.so.1 ]; then
+                # Solaris 5.8, 5.9
+                pamconfig="auth required pam_unix.so.1
+account required pam_unix.so.1
+session required pam_unix.so.1"
+            elif [ -f /usr/lib/security/pam_unix_auth.so.1 ] &&\
+                 [ -f /usr/lib/security/pam_authtok_get.so.1 ] &&\
+                 [ -f /usr/lib/security/pam_unix_cred.so.1 ] &&\
+                 [ -f /usr/lib/security/pam_unix_session.so.1 ]; then
+                # Solaris 5.10, 5.11
+                pamconfig="auth required pam_authtok_get.so.1
+auth required pam_unix_auth.so.1
+auth required pam_unix_cred.so.1"
+                if [ -f /usr/lib/security/pam_unix_acct.so.1 ]; then
+                    # Solaris 5.11
+                    pamconfig="$pamconfig
+account required pam_unix_acct.so.1"
+                elif [ -f /usr/lib/security/pam_unix_account.so.1 ]; then
+                    # Solaris 5.10
+                    pamconfig="$pamconfig
+account required pam_unix_account.so.1"
+                fi
+                pamconfig="$pamconfig
+session required pam_unix_session.so.1"
+            else
+                echo "Can't find required PAM modules"
+                exit 1
+            fi
+            ;;
+        HP-UX)
+            pamconfig="auth required libpam_unix.so.1
+account required libpam_unix.so.1
+session required libpam_unix.so.1";
+            ;;
+        FreeBSD)
+            pamlocation=/usr/local/etc
+            pamconfig="$pamconfig
+session required pam_unix.so";
+            if [ '!' -d "$pamlocation/pam.d" ]; then
+              mkdir -p "$pamlocation/pam.d" -m 0755
+              chown root:wheel "$pamlocation/pam.d"
+            fi
+            ;;
+    esac
+
+    inited=0
+
+    # New-style /etc/pam.d configuration. If a configuration for vncserver
+    # already exists, then preserve it as .old if it differs.
+    if [ -d $pamlocation/pam.d ]; then
+        cfg=$pamlocation/pam.d/vncserver
+        echo "Updating $cfg"
+        backup $cfg
+        cat > $cfg <<EOF
+$pamcomment
+$pamwarning
+$pamconfig
+EOF
+        chmod 644 $cfg
+        verify $cfg
+        inited=1
+    fi
+    # Old-style /etc/pam.conf configuration. We don't update existing config.
+    if [ -f $pamlocation/pam.conf ]; then
+        printf "%s" "Updating $pamlocation/pam.conf... "
+        pamwarning="# These rules are automatically generated. DO NOT EDIT.
+# To make changes, create rules for an application named vncserver.custom
+# and create or edit $ETCVNCDIR/config.d/common.custom to add
+# 'PamApplicationName=vncserver.custom'"
+        # Remove any old stuff from the file.  This awk script is deliberately
+        # different from the awk script in the package uninstall snippets: the
+        # uninstall snippets only remove blocks exactly matching the block we
+        # create, but this one goes further and removes every "vncserver" line
+        tmpfile=`mktemp2 /tmp/vnc.pam.XXXXXX "$pamlocation/pam.vnctmp"`
+        if $awk '/^# Default VNC .* PAM configuration/ { comm = 1; }
+                 /^#/ && comm == 1 { next }
+                 /^ *vncserver / { comm = 0; next }
+                 1 { comm = 0; print }' $pamlocation/pam.conf > $tmpfile; then
+          if diff $pamlocation/pam.conf $tmpfile >/dev/null 2>&1; then :; else
+            printf "%s" "removing old config... "
+          fi
+        else
+          cat $pamlocation/pam.conf > $tmpfile
+        fi
+        # Prepend 'vncserver ' to each line
+        pamconfig=`echo "$pamconfig" | sed -e's/^/vncserver /'`
+        if grep '^ *vncserver ' $tmpfile >/dev/null 2>&1; then
+          echo "skipped (error parsing $pamlocation/pam.conf)"
+          echo "WARNING: please update $pamlocation/pam.conf manually to match the defaults below:"
+          echo "$pamconfig" | sed -e's/^/   /'
+        else
+          if [ $inited = 0 ]; then
+            # If inited==0, add the VNC lines to pam.conf, otherwise we found
+            # pam.d so we're just cleaning up pam.conf.
+            cat >> $tmpfile <<EOF
+$pamcomment
+$pamwarning
+$pamconfig
+EOF
+          fi
+          if diff $pamlocation/pam.conf $tmpfile >/dev/null 2>&1; then :; else
+            cp -p $pamlocation/pam.conf $pamlocation/pam.conf.vncbak
+            cat $tmpfile > $pamlocation/pam.conf
+          fi
+          echo done
+        fi
+        rm $tmpfile
+        inited=1
+    fi
+    [ $inited = 1 ] || \
+        (echo "Can't find PAM configuration files"; exit 1)
+
+    if [ "`uname -s`" = Linux ]; then
+        # Search for any central configuration in the locations RedHat/Debian-
+        # derived distros use, and alert user if it looks better than the
+        # vanilla config we just installed
+        extra_modules=`(grep -v -e 'pam_\(deny\|permit\|unix\|succeed\|env\)\|optional\|^[[:space:]]*#\|^[[:space:]]*$' \
+                             /etc/pam.d/common-auth /etc/pam.d/password-auth \
+                             /etc/pam.d/system-auth \
+                        | sed -e 's/[^:]*://' \
+                        | awk '$1 != "auth" { next; }
+                               {
+                                 if ($2 ~ /^\[/) {
+                                   for(i=2;i<=NF;++i) {
+                                     if ($i ~ /]$/) { ++i; print "   " $i; break; }
+                                   }
+                                 } else {
+                                   print "   " $3;
+                                 }
+                               }' \
+                        | uniq)2>/dev/null`
+        if [ -n "$extra_modules" ] && \
+           [ "`find /etc/pam.d -name 'vncserver.*' '!' -name vncserver.old -print \
+              | wc -l`" -lt 1 ]; then
+          echo
+          echo "NOTICE: common configuration in /etc/pam.d contains the following modules:"
+          echo "$extra_modules"
+          echo "The default vncserver PAM configuration only enables pam_unix. See "
+          echo "\`man vncinitconfig' for details on any manual configuration required."
+          echo
+        fi
+    fi
+fi
+
+# Initialise $ETCVNCDIR/xstartup
+if [ "$init_xstartup" = "1" ]; then
+    mkdir -p $ETCVNCDIR
+    cfg=$ETCVNCDIR/xstartup
+    backup $cfg
+    cat  > $cfg <<EOF
+#!/bin/sh
+
+# Default VNC Server (Virtual-Mode) start-up script.
+#
+# This file is automatically generated. DO NOT EDIT.
+# To override settings in this file, create or edit $ETCVNCDIR/xstartup.custom
+# and make it executable. This will then be executed instead of this file.
+
+# The following keymap code is designed to support VNC Viewers with US and
+# Western European keyboards. If you expect VNC Viewers to have different
+# keyboards, override this file as described above, making sure to preserve all
+# this code. You can then change the variable assignment appropriately. For
+# example, setting:
+#
+# targetkbMap="pc+cz+ru:2+gr:3+fr:4"
+#
+# ...provides support for Czech, Russian, Greek and French keyboards.
+targetkbMap="pc+us+us(intl):2"
+if $which_str setxkbmap > /dev/null 2>&1 && \\
+  $which_str sed > /dev/null 2>&1 && \\
+  $which_str xkbcomp > /dev/null 2>&1 ; then
+  setxkbmap -symbols "\$targetkbMap" -print | sed -n '/xkb_keymap {/,\$p' | xkbcomp - \$DISPLAY
+fi
+# End of keymap code
+
+[ -r \$HOME/.Xresources ] && xrdb \$HOME/.Xresources
+xsetroot -solid grey
+
+if [ -x /usr/bin/gnome-session -a -z "\$VNC_SYSTEMXORG" ]; then
+  # Some gnome session types won't work with Xvnc, try to pick a sensible
+  # default.
+  for SESSION in "ubuntu-2d" "2d-gnome" "gnome-classic" "gnome-fallback"; do
+    if [ -f /usr/share/gnome-session/sessions/\$SESSION.session ]; then
+      DESKTOP_SESSION=\$SESSION; export DESKTOP_SESSION
+      GDMSESSION=\$SESSION; export GDMSESSION
+      STARTUP="/usr/bin/gnome-session --session=\$SESSION"; export STARTUP
+    fi
+  done
+fi
+
+if [ -f /usr/share/gnome-session/sessions/ubuntu.session -a -n "\$VNC_SYSTEMXORG" ]; then
+    GNOME_SHELL_SESSION_MODE=ubuntu; export GNOME_SHELL_SESSION_MODE
+fi
+
+unset SESSIONBIN
+XTERM_COMMAND="xterm -geometry 80x24+10+10 -ls"
+
+if   [ -x /etc/X11/Xsession ]; then SESSIONBIN="/etc/X11/Xsession"
+elif [ -x /etc/X11/xdm/Xsession ]; then SESSIONBIN="/etc/X11/xdm/Xsession"
+elif [ -x /etc/X11/xinit/Xsession ]; then 
+  SESSIONBIN="/etc/X11/xinit/Xsession"
+  # Use gnome as a sensible default in SystemXorg mode on RedHat based systems
+  if [ ! -x "\$HOME/.xsession" -a ! -x "\$HOME/.Xclients" -a \\
+      "\$VNC_SYSTEMXORG" -a -e /etc/redhat-release -a -x /usr/bin/gnome-session ]; then
+    SESSIONBIN="\$SESSIONBIN gnome"
+  fi
+elif [ -x /etc/X11/gdm/Xsession ]; then SESSIONBIN="/etc/X11/gdm/Xsession gnome-session"
+elif [ -x /etc/gdm/Xsession ]; then SESSIONBIN="/etc/gdm/Xsession gnome-session"
+elif [ -x /etc/kde/kdm/Xsession ]; then SESSIONBIN="/etc/kde/kdm/Xsession"
+elif [ -x /usr/dt/bin/Xsession ]; then
+  XSTATION=1
+  DTXSERVERLOCATION=local
+  export XSTATION DTXSERVERLOCATION
+  SESSIONBIN="/usr/dt/bin/Xsession"
+elif [ -x /usr/dt/bin/dtsession ]; then SESSIONBIN="/usr/dt/bin/dtsession"
+elif $which_str twm > /dev/null 2>&1; then
+  \$XTERM_COMMAND &
+  SESSIONBIN="twm"
+fi
+
+if [ "x\${SESSIONBIN}" = "x" ]; then
+  echo "No session located; just starting a terminal"
+  \$XTERM_COMMAND
+  echo "Terminal closed with return code \$?"
+else
+  echo "Starting session: \$SESSIONBIN"
+  \$SESSIONBIN
+  echo "Session terminated with return code \$?"
+fi
+EOF
+    verify $cfg
+    chmod a+x $cfg
+fi
+
+# Initialise $ETCVNCDIR/config and server symlinks
+if [ "$init_config" = "1" ]; then
+    init_xserver_config_path
+    mkdir -p $ETCVNCDIR
+
+    cfg=$ETCVNCDIR/config
+    backup $cfg
+    cat > $cfg <<EOF
+# Default X Server command-line parameters for VNC Server.
+#
+# This file is automatically generated. DO NOT EDIT.
+# To override settings in this file, create or edit $ETCVNCDIR/config.custom.
+
+# Continue even if standard ports fail
+-pn
+EOF
+    # Try to work out the font path
+    printf %s "Looking for font path... "
+    get_attr_from_xserver_config "Font Path:" FontPath
+    if [ -n "$attr_value" ]; then
+        attr_value=`echo $attr_value | strip_user_specfic_paths`
+        attr_value=`echo $attr_value | sed -e "s%,$sharevnc/fonts/\$%%"`
+        echo "$attr_value (from $attr_location)."
+        cat >> $cfg <<EOF
+
+# Default font path (from $attr_location)
+-fp "$attr_value"
+EOF
+    else
+        echo "not found."
+    fi
+    verify $cfg
+
+    # Create $ETCVNCDIR/config.d/common with comment
+    mkdir -p $ETCVNCDIR/config.d
+    backup $ETCVNCDIR/config.d/common
+    cat > $ETCVNCDIR/config.d/common <<EOF
+# Default settings for all VNC programs.
+#
+# This file is automatically generated. DO NOT EDIT.
+# To override settings in this file, create or edit
+# $ETCVNCDIR/config.d/common.custom
+
+EOF
+    verify $ETCVNCDIR/config.d/common
+
+    for f in \
+        get_primary_ip4 \
+        vncservice \
+    ; do
+        rm -f $ETCVNCDIR/$f
+        ln -s $libvnc/$f $ETCVNCDIR
+    done
+fi
+
+# Initialise $ETCVNCDIR/pulse/{daemon.conf,default.pa}
+if [ "$init_virtual_pulse_conf" = "1" ]; then
+    mkdir -p $ETCVNCDIR/pulse
+    daemonConf=$ETCVNCDIR/pulse/daemon.conf
+    defaultConf=$ETCVNCDIR/pulse/default.pa
+
+    # Read system's defaults, so that the config file we construct matches
+    # the console's configuration:
+    PULSE_DUMP_CONF=`pulseaudio --dump-conf 2>/dev/null`
+    PULSE_FLAT_VOLUMES=`echo "$PULSE_DUMP_CONF" | grep flat-volumes | sed 's/.*= *//'`
+    if [ -z "$PULSE_FLAT_VOLUMES" ]; then PULSE_FLAT_VOLUMES=no; fi
+    PULSE_ALTERNATE_RATE="# Only available in Pulseaudio 2.0.0: "
+    if echo "$PULSE_DUMP_CONF" | grep alternate-sample-rate >/dev/null; then
+      PULSE_ALTERNATE_RATE=""
+    fi
+    PULSE_DEFERRED_VOLUME="# Only available in Pulseaudio 1.0.0: "
+    if echo "$PULSE_DUMP_CONF" | grep enable-deferred-volume >/dev/null; then
+      PULSE_DEFERRED_VOLUME=""
+    fi
+
+    backup $daemonConf
+    cat  > $daemonConf <<EOF
+### Default configuration file used for running the PulseAudio daemon in
+### virtual mode.
+###
+### This file is automatically generated. DO NOT EDIT.
+### To override settings in this file, create or edit
+### $ETCVNCDIR/pulse/daemon.custom.conf, or alternatively
+### ~/.vnc/pulse/daemon.conf. This will then be loaded instead of this file.
+
+# We cannot use PID files - or the user would be limited to using audio in a
+# single virtual session!
+daemonize = no
+use-pid-file = no
+system-instance = no
+
+# When more than one PulseAudio instance is running per user, you *must* use
+# PULSE_SERVER in the environment to distinguish between them; and, when that's
+# set in the environment, autospawn cannot be used; hence, we cannot have the
+# pulse daemon exit when idle (since it won't be respawned).
+exit-idle-time = -1
+
+# We must redirect the default script file to special one, in order to prevent
+# any modules from touching the physical hardware, and create a fully-virtual
+# session.
+load-default-script-file = yes
+default-script-file = $defaultConf
+
+# At the discretion of the user...
+flat-volumes = $PULSE_FLAT_VOLUMES
+
+# For VNC, we set the defaults to our preferred remote audio format.
+default-sample-format = s16ne
+default-sample-rate = 48000
+${PULSE_ALTERNATE_RATE}alternate-sample-rate = 44100
+default-sample-channels = 2
+default-channel-map = front-left,front-right
+${PULSE_DEFERRED_VOLUME}enable-deferred-volume = no
+
+# Aggregate the Pulse logging in with the rest of the VNC session
+log-target = stderr
+log-level = notice
+log-time = yes
+EOF
+    verify $daemonConf
+
+    backup $defaultConf
+    cat  > $defaultConf <<EOF
+#!/usr/bin/pulseaudio -nF
+
+### Default startup script used for starting PulseAudio in virtual mode.
+###
+### This file is automatically generated. DO NOT EDIT.
+### To override settings in this file, create a copy of this file, then follow
+### the instructions in $ETCVNCDIR/pulse/daemon.conf create a customised
+### daemon.conf.  Finally, in your daemon.conf edit the "default-script-file"
+### line to point to your customised copy of this default.pa file.
+
+### Automatically restore the volume of streams and devices
+load-module module-device-restore
+load-module module-stream-restore
+load-module module-card-restore
+
+### Automatically augment property information from .desktop files
+### stored in /usr/share/application
+.ifexists module-augment-properties.so
+load-module module-augment-properties
+.endif
+
+### Load a dummy sink, which will be picked up by VNC Viewer
+###
+### Regarding the format: either of 48000 or 44100 would be fine.  Also, if you
+### want to send remote audio in surround sound back to VNC Viewer, feel free to
+### set 5.1 or 7.1 speakers here - it's just not turned on by default since it
+### takes rather a lot of bandwidth, and most people don't play surround sound
+### content very often.
+load-module module-null-sink sink_name=vnc format=s16 rate=48000 channels=2 channel_map=front-left,front-right
+update-sink-proplist vnc device.description="Remote audio"
+update-sink-proplist vnc device.icon_name=vncserver
+update-source-proplist vnc.monitor device.description="Monitor of remote audio"
+
+### Load the native protocol module.  Note that we customise the
+### PULSE_RUNTIME_PATH variable to force it to use a session-specific socket.
+load-module module-native-protocol-unix
+
+### Honour intended role device property
+.ifexists module-intended-roles.so
+load-module module-intended-roles
+.endif
+
+### Cork music/video streams when a phone stream is active
+.ifexists module-role-cork.so
+load-module module-role-cork
+.endif
+
+### Modules to allow autoloading of filters (such as echo cancellation)
+### on demand. module-filter-heuristics tries to determine what filters
+### make sense, and module-filter-apply does the heavy-lifting of
+### loading modules and rerouting streams.
+.ifexists module-filter-heuristics.so
+load-module module-filter-heuristics
+load-module module-filter-apply
+.endif
+
+### Absolutely do *not* load any X11 modules!  We have a PulseAudio client *in*
+### the X server (Xvnc) so we must completely avoid all X11 interactions to
+### prevent deadlocks.
+
+### Make the remote audio device the default
+set-default-sink vnc
+set-default-source vnc.monitor
+EOF
+    verify $defaultConf
+fi
+
+# Initialise X11 config files for SystemXorg virtual mode
+if [ "$init_virtual_xorg_conf" = "1" ]; then
+  xconfdir=/etc/X11 # Directory where the X server looks for config files
+  mkdir -p $xconfdir
+
+  for driver in dummy vnc
+  do
+    cfg=$xconfdir/vncserver-virtual-${driver}.conf
+    backup $cfg
+
+    MONITOR_EXTRA=""
+    if [ $driver = "dummy" ]; then
+      MONITOR_EXTRA="  # Add 16:9 modes, others are automatically detected.
+  Modeline \"1280x720\" 74.48 1280 1336 1472 1664 720 721 724 746
+  Modeline \"1920x1080\" 172.80 1920 2040 2248 2576 1080 1081 1084 1118
+"
+    fi
+
+    cat  > $cfg <<EOF
+# This Xorg configuration file is meant to be used by vncserver-virtual
+# in SystemXorg mode using the xf86-video-${driver} driver.
+
+Section "ServerFlags"
+  Option "DontVTSwitch" "true"
+  Option "AllowMouseOpenFail" "true"
+  Option "PciForceNone" "true"
+  Option "AutoEnableDevices" "false"
+  Option "AutoAddDevices" "false"
+  Option "IgnoreABI" "true"
+EndSection
+
+Section "InputDevice"
+  Identifier "void_mouse"
+  Option "CorePointer" "true"
+  Driver "void"
+EndSection
+
+Section "InputDevice"
+  Identifier "void_keyboard"
+  Option "CoreKeyboard" "true"
+  Driver "void"
+EndSection
+
+Section "Device"
+  Identifier "${driver}_videocard"
+  Driver "${driver}"
+  VideoRam 192000
+EndSection
+
+Section "Monitor"
+  Identifier "${driver}_monitor"
+  HorizSync   1.0 - 2000.0
+  VertRefresh 1.0 - 200.0
+${MONITOR_EXTRA}\
+EndSection
+
+Section "Screen"
+  Identifier "${driver}_screen"
+  Device "${driver}_videocard"
+  Monitor "${driver}_monitor"
+EndSection
+
+Section "ServerLayout"
+  Identifier   "${driver}_layout"
+  Screen       "${driver}_screen"
+  InputDevice  "void_mouse"
+  InputDevice  "void_keyboard"
+EndSection
+EOF
+    verify $cfg
+  done
+
+fi
+# Initialise RSA keys for encrypted service-mode sessions.
+if [ "$init_keygen" = "1" ]; then
+    `installed_binary vncserver-x11` -generatekeys
+fi
+
+# Generate host ID for update notification / VNC Cloud
+if [ "$init_updates" = "1" ]; then
+    `installed_binary vncserver-x11` -createHostId
+fi
+
+if [ "$init_licensing" = "1" ]; then
+    `installed_binary vnclicense` -check >/dev/null # delete old sockets
+    if [ -d /var/run/.Xvnc4EE ]; then
+        (rmdir /var/run/.Xvnc4EE || chmod 1755 /var/run/.Xvnc4EE) 2>/dev/null
+    fi
+    if [ -d /tmp/.Xvnc4EE ]; then
+        (rmdir /tmp/.Xvnc4EE || chmod 1755 /tmp/.Xvnc4EE) 2>/dev/null
+    fi
+    mkdir -m 01777 -p /tmp/.vncserver-license
+fi
+
+install_init_script()
+{
+    if [ "`id -u`" -ne 0 ]; then
+        echo "Cannot install init script for $2 - not running as root."
+        return
+    fi
+    
+    start_pri=20
+    stop_pri=80
+    init_d=/etc/init.d
+    path=/bin:/usr/bin
+    inittype=
+    case "$SYSNAME" in
+        Linux)
+            if [ -d /run/systemd/system ]; then
+              inittype=systemd
+            elif which systemctl >/dev/null 2>&1; then
+              inittype=systemd
+            elif [ -d $init_d ]; then
+              inittype=SysV
+            fi
+            ;;
+        HP-UX)
+            # HP-UX uses /sbin/init.d, and has 3-digit priority codes
+            init_d=/sbin/init.d
+            start_pri=${start_pri}0
+            stop_pri=${stop_pri}0
+            if [ -d $init_d ]; then inittype=SysV; fi
+            path=$path:/usr/local/bin:/usr/bin/X11:/usr/contrib/bin/X11
+            ;;
+        SunOS)
+            path=$path:"$bin":/usr/openwin/bin:/usr/bin/X11:/usr/X11/bin
+            if [ -f /lib/svc/share/smf_include.sh ]; then
+              # We use smf_include's "smf_present" function if possible - but
+              # not if someone's doing a crazy install using PGK_INSTALL_ROOT
+              # (ie he's installing packages onto an unbooted from a LiveCD for
+              # example)
+              if [ -n "$PKG_INSTALL_ROOT" ]; then
+                inittype=SMF
+              else
+                . /lib/svc/share/smf_include.sh
+                if smf_present; then
+                  inittype=SMF
+                fi
+              fi
+            fi
+            if [ -z "$inittype" ] && [ -d $init_d ]; then inittype=SysV; fi
+            ;;
+        AIX)
+            path=$path:/usr/local/bin:/usr/bin/X11
+            init_d=/etc/rc.d/init.d
+            if [ -d $init_d ]; then inittype=SysV; fi
+            ;;
+        FreeBSD)
+            path=$path:/usr/local/bin
+            init_d=/usr/local/etc/rc.d
+            if [ -d $init_d ]; then inittype=rc.conf; fi
+            ;;
+    esac
+    if [ -n "$inittype_arg" ]; then
+      inittype=$inittype_arg
+    fi
+    if [ -d "/usr/X11R6/bin" ]; then
+      path=$path:/usr/X11R6/bin
+    fi
+    init_script=${init_d}/$1
+    if [ "$inittype" = SysV ]; then
+        backup $init_script
+        cat > $init_script <<EOF
+#!/bin/sh
+
+# chkconfig: 2345 $start_pri $stop_pri
+# description: $2
+# pidfile: /var/run/$3.pid
+
+### BEGIN INIT INFO
+# Provides:          $1
+# Required-Start:    \$remote_fs \$syslog \$network
+# Required-Stop:     \$remote_fs \$syslog \$network
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: $2
+# Description:       $2
+### END INIT INFO
+
+PIDFILE=/var/run/$3.pid
+PATH=$path
+export PATH
+[ -r /etc/default/locale ] && . /etc/default/locale 2>/dev/null
+export LANG
+
+case \$1 in
+start)
+    if $3; then
+      [ -d /var/lock/subsys ] && touch /var/lock/subsys/$3
+    fi
+    ;;
+stop)
+    if [ -r "\$PIDFILE" ] && ps -p \`cat "\$PIDFILE"\` >/dev/null; then
+      kill -TERM \`cat \$PIDFILE\`
+      rm -f /var/lock/subsys/$3
+    else
+      echo "No $3 process found to stop"
+      exit 7
+    fi
+    ;;
+force-reload|reload)
+    if [ -r "\$PIDFILE" ] && ps -p \`cat "\$PIDFILE"\` >/dev/null; then
+      kill -HUP \`cat \$PIDFILE\`
+    else
+      echo "No $3 process found to reload"
+      exit 7
+    fi
+    ;;
+restart)
+    \$0 stop >/dev/null || true
+    i=0
+    while [ -r "\$PIDFILE" ] && [ \$i -lt 5 ]; do
+      i=\`expr \$i + 1\`
+      sleep 1
+    done
+    \$0 start
+    ;;
+try-restart)
+    if \$0 status >/dev/null; then
+      \$0 restart
+    else
+      echo "No running $3 process; service not started"
+    fi
+    ;;
+status)
+    if [ '!' -f "\$PIDFILE" ]; then
+        echo "$3 is not running"
+        exit 3
+    elif [ '!' -r "\$PIDFILE" ]; then
+        echo "Status of $3 unknown (pidfile not readable)"
+        exit 4
+    elif ps -p \`cat "\$PIDFILE" 2>/dev/null\` >/dev/null ; then
+        echo "$3 is running"
+        exit 0
+    else
+        echo "$3 not running but pidfile exists"
+        exit 1
+    fi
+    ;;
+*)
+    echo "Usage: \$0 (start|stop|restart|status)"
+    exit 1
+    ;;
+esac
+
+EOF
+        chmod 0755 $init_script
+        echo "Installed init script for $2"
+        verify $init_script
+        echo "Start and stop the service with:"
+        echo "  $init_script (start|stop)"
+        if which chkconfig >/dev/null 2>&1; then
+          echo "Use chkconfig to start or stop the service at boot time."
+        elif which update-rc.d >/dev/null 2>&1; then
+          echo "Use update-rc.d to start or stop the service at boot time."
+        fi
+
+    elif [ "$inittype" = systemd ]; then
+        mkdir -m 0755 -p /usr/lib/systemd/system
+        init_script=/usr/lib/systemd/system/$1.service
+        enable_service=0
+        init_d_script=${init_d}/$1
+        if [ -f "$init_d_script" ]; then
+          # Clean up old SysV script
+          rm -f $init_d_script
+          # If moving from SysV to systemd, then enable the systemd
+          # service if the corresponding SysV service was enabled.
+          if [ ! -f $init_script ] &&
+             [ -h /etc/rc2.d/S*$1 ]; then
+            enable_service=1
+          fi
+        fi
+        cat > ${init_script}.tmp <<EOF
+[Unit]
+Description=$2
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/$3 -fg
+ExecReload=/bin/kill -HUP \$MAINPID
+Restart=on-failure
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        chmod 0644 ${init_script}.tmp
+        mv ${init_script}.tmp $init_script
+        systemctl daemon-reload || true
+        echo "Installed systemd unit for $2"
+        echo "Start or stop the service with:"
+        echo "  systemctl (start|stop) $1.service"
+        echo "Mark or unmark the service to be started at boot time with:"
+        echo "  systemctl (enable|disable) $1.service"
+        if [ $enable_service = 1 ]; then
+          echo "Enabling systemd service to match SysV service"
+          systemctl enable $1.service
+        fi
+
+    elif [ "$inittype" = rc.conf ]; then
+        backup $init_script
+        name=`echo $3 | tr - _`
+        rcvar=`(. /etc/rc.subr; name=$name set_rcvar)`
+        cat > $init_script <<EOF
+#!/bin/sh
+
+# PROVIDE: $name
+# REQUIRE: DAEMON
+#
+# Add the following lines to /etc/rc.conf to enable the $2:
+#
+# ${rcvar}="YES"
+#
+
+PATH=$path
+export PATH
+. /etc/rc.subr
+
+name="$name"
+rcvar=\`set_rcvar\`
+eval "\${rcvar}=\\\${\${rcvar}:-NO}"
+command="$bin/$1"
+pidfile="/var/run/$1.pid"
+
+load_rc_config $name
+run_rc_command "\$1"
+
+EOF
+        chmod 0755 $init_script
+        echo "Installed rc.d script for $2"
+        verify $init_script
+        echo "Start and stop the service with:"
+        echo "  $init_script (onestart|onestop)"
+        echo "Add ${name}_enable=YES to /etc/rc.conf to start it on boot."
+
+    elif [ "$inittype" = SMF ]; then
+        if [ "`uname -r`" = 5.10 ]; then
+          svc_manifest_dir=/var/svc/manifest
+        else
+          svc_manifest_dir=/lib/svc/manifest
+        fi
+        init_script="$svc_manifest_dir/application/$1.xml"
+        method_script=/lib/svc/method/vncserver
+        mkdir -p $svc_manifest_dir/application
+        mkdir -p /lib/svc/method
+        cat > $init_script <<EOF
+<?xml version="1.0"?>
+<!DOCTYPE service_bundle
+  SYSTEM "/usr/share/lib/xml/dtd/service_bundle.dtd.1">
+
+<service_bundle type='manifest' name='$1'>
+  <service name='application/$3' type='service' version='1'>
+    <create_default_instance enabled='false' />
+    <single_instance />
+
+    <dependency name='multi-user-server' grouping='optional_all'
+       type='service' restart_on='none'>
+      <service_fmri value='svc:/milestone/multi-user-server' />
+    </dependency>
+    <dependency name='network' grouping='require_all'
+        restart_on='none' type='service'>
+      <service_fmri value='svc:/milestone/network:default' />
+    </dependency>
+
+    <exec_method type='method' name='start'
+        exec='/lib/svc/method/vncserver %m %s' timeout_seconds='15'>
+      <method_context>
+        <method_credential user='root' />
+      </method_context>
+    </exec_method>
+
+    <exec_method type='method' name='restart' exec=':kill -HUP'
+        timeout_seconds='5' />
+
+    <exec_method type='method' name='stop' exec=':kill'
+        timeout_seconds='5' />
+
+    <template>
+      <common_name>
+        <loctext xml:lang='C'>$2</loctext>
+      </common_name>
+      <documentation>
+        <manpage title='$1' section='3' />
+      </documentation>
+    </template>
+  </service>
+</service_bundle>
+EOF
+        chmod 0444 $init_script
+        chgrp sys $init_script
+        svccfg validate $init_script
+        backup $method_script
+        cat > $method_script <<EOF
+#!/sbin/sh
+
+. /lib/svc/share/smf_include.sh
+
+PATH=$path
+export PATH
+
+if [ \$# -ge 2 ]; then
+  APPLICATION=\`echo "\$2" | sed -e 's/application\///'\`
+fi
+PIDFILE=/var/run/\$APPLICATION.pid
+if [ \$# -eq 2 ] && [ start = "\$1" ] && [ -x "$bin/\$APPLICATION" ]; then
+  smf_clear_env
+  if [ -f "\$PIDFILE" ] && ps -p \`cat "\$PIDFILE" 2>/dev/null\` >/dev/null; then
+    echo "\$APPLICATION is already running - has it been started outside SMF?"
+    exit $SMF_EXIT_ERR_CONFIG
+  fi
+  $bin/\$APPLICATION
+  exit \$?
+fi
+
+echo "Usage: \$0 start <service>"
+exit 1
+EOF
+        chmod 0555 $method_script
+        chgrp bin $method_script
+        verify $method_script
+        if [ -z "$PKG_INSTALL_ROOT" ]; then
+          svcadm restart svc:/system/manifest-import:default || true
+        fi
+        echo "Installed SMF manifest for $2"
+        echo "Start or stop the service with:"
+        echo "  svcadm (enable|disable) application/$3"
+
+    else
+      if [ -n "$inittype" ]; then
+        echo "ERROR: \"$inittype\" is not a supported init type. Enter one of SysV, systemd, rc.conf, SMF." >&2
+      else
+        echo "ERROR: init script for $2 not installed (no supported init system found)" >&2
+      fi
+    fi
+
+    [ -f $bin/$1 ] || echo "Notice: the installed init template may need to be manually configured, as
+$1 is not installed in $bin."
+    echo
+}
+
+
+if [ "$init_seLinux" = 1 ]; then
+  . /usr/lib/vnc/registerSELinuxmodules
+  SELinux_installFedoraCorrection $bin
+  SELinux_installModules $share/selinux/packages/realvnc $bin
+fi
+
+# Init service-mode daemon
+if [ "$init_service_daemon" = 1 ]; then
+    install_init_script "vncserver-x11-serviced" "VNC Server in Service Mode daemon" "vncserver-x11-serviced"
+fi
+
+# Init virtual-mode daemon
+if [ "$init_virtual_daemon" = 1 ]; then
+    install_init_script "vncserver-virtuald" "VNC Server in Virtual Mode daemon" "vncserver-virtuald"
+fi
+
+# Sets up and enables SystemXorg for virtual mode
+if [ "$enable_system_xorg" = "1" ]; then
+  IS_ROOT=""
+  if [ `id -u` -eq 0 ]; then
+    IS_ROOT="1"
+  else
+    USERNAME=`whoami`
+    USER_HOME=`eval echo "~$USERNAME"`
+  fi
+  DISTRO=""
+  VER=0
+  if [ -f "/etc/redhat-release" ]; then
+    DISTRO="CentOS/RHEL"
+    VER=$(rpm -q --qf "%{VERSION}" $(rpm -q --whatprovides redhat-release) | \
+        sed -e 's/[^0-9].*//')
+  elif [ -f "/etc/lsb-release" ]; then
+    DISTRO=$(lsb_release -is)
+    VER=$(lsb_release -rs | sed -e 's/[^0-9].*//')
+  fi
+  echo
+  if [ "$DISTRO" = "Ubuntu" -a "$VER" -lt 18 ] || \
+     [ "$DISTRO" = "CentOS/RHEL" -a "$VER" -lt 6 ] || \
+     [ "$DISTRO" != "Ubuntu" -a "$DISTRO" != "CentOS/RHEL" ]; then
+    echo "WARNING: SystemXorg is not supported on this distribution."
+    echo "You may encounter issues when using it."
+    echo
+  fi
+  # Figure out what package managers are present
+  HAS_YUM=""
+  if command -v yum >/dev/null 2>&1; then
+    HAS_YUM="1"
+  fi
+  # Check for Xorg.
+  if ! command -v Xorg >/dev/null 2>&1; then
+    echo "WARNING: Xorg not found."
+    echo "Please install the appropriate package for your distribution."
+    echo
+  fi
+  XORG_MODULE_DIR="/usr/lib/xorg/modules"
+  XORG_MODULE_DIR64="/usr/lib64/xorg/modules"
+  # Check for dummy video driver.
+  if [ ! -f "$XORG_MODULE_DIR/drivers/vnc_drv.so" ] &&
+     [ ! -f "$XORG_MODULE_DIR64/drivers/vnc_drv.so" ] &&
+     [ ! -f "$XORG_MODULE_DIR/drivers/dummy_drv.so" ] &&
+     [ ! -f "$XORG_MODULE_DIR64/drivers/dummy_drv.so" ]; then
+    echo "WARNING: Xorg dummy video driver not found."
+    if [ "$DISTRO" != "CentOS/RHEL" ] || [ -z "$HAS_YUM" ]; then
+      echo "Please install the appropriate package for your distribution."
+    elif [ -z "$IS_ROOT" ]; then
+      echo "Re-run as root to install the xorg-x11-drv-dummy package."
+    else
+      confirm "Install the xorg-x11-drv-dummy package? [y/n]: " && \
+        yum install xorg-x11-drv-dummy
+    fi
+  fi
+  # The void input driver is only needed on CentOS/RHEL 6.
+  if [ "$DISTRO" = "CentOS/RHEL" ] && [ "$VER" -eq 6 ]; then
+    if [ ! -f "$XORG_MODULE_DIR/input/void_drv.so" ] && 
+       [ ! -f "$XORG_MODULE_DIR64/input/void_drv.so" ]; then
+      echo "WARNING: Xorg void input driver not found."
+      if [ -z "$HAS_YUM" ]; then
+        echo "Please install the appropriate package for your distribution."
+      elif [ -z "$IS_ROOT" ]; then
+        echo "Re-run as root to install Xorg void input driver package."
+      else
+        confirm "Install the xorg-x11-drv-void package? [y/n]: " && \
+          yum install xorg-x11-drv-void
+      fi
+      echo
+    fi
+  fi
+  # Offer to install colord policykit rule if policykit is installed
+  if [ -d "/etc/polkit-1/localauthority/50-local.d" ] && \
+      [ ! -f "/etc/polkit-1/localauthority/50-local.d/allow-colord.pkla" ] || \
+      [ -z "$IS_ROOT" ]; then
+    echo "You may be prompted to authenticate to create a color managed device when "
+    echo "connecting to virtual sessions. This can be avoided by adding a PolicyKit .pkla "
+    echo "file to /etc/polkit-1/localauthority/50-local.d that allows all users to "
+    echo "access colord by default."
+    if [ -z "$IS_ROOT" ]; then
+      echo "Re-run as root to add this .pkla file."
+    elif confirm "Add a .pkla file to grant colord access to all users? [y/n]: "; then
+      cat  > "/etc/polkit-1/localauthority/50-local.d/allow-colord.pkla" <<EOF
+[Allow colord for all users]
+Identity=unix-user:*
+Action=org.freedesktop.color-manager.create-device;org.freedesktop.color-manager.create-profile;org.freedesktop.color-manager.delete-device;org.freedesktop.color-manager.delete-profile;org.freedesktop.color-manager.modify-device;org.freedesktop.color-manager.modify-profile
+ResultAny=yes
+ResultInactive=auth_admin
+ResultActive=yes
+EOF
+    fi
+    echo
+  fi
+  # Migrate system Xvnc configuration.
+  SYSTEM_XVNC_CONFIG="/etc/vnc/config.d/Xvnc"
+  SYSTEM_VNCSX11V_CONFIG="/etc/vnc/config.d/vncserver-x11-virtual"
+  if [ -f "$SYSTEM_XVNC_CONFIG" ] && [ ! -f "$SYSTEM_VNCSX11V_CONFIG" ]; then
+    echo "WARNING: Xvnc configuration found in $SYSTEM_XVNC_CONFIG."
+    echo "Any settings in this file will no longer apply to virtual mode unless they "
+    echo "are copied to $SYSTEM_VNCSX11V_CONFIG."
+    if [ -z "$IS_ROOT" ]; then
+      echo "Re-run as root to copy these settings."
+    else
+      confirm "Copy the settings from this file? [y/n]: " && \
+        cp "$SYSTEM_XVNC_CONFIG" "$SYSTEM_VNCSX11V_CONFIG"
+    fi
+    echo
+  fi
+  # Migrate user Xvnc configuration.
+  if [ -z "$IS_ROOT" ]; then
+    USER_XVNC_CONFIG="$USER_HOME/.vnc/config.d/Xvnc"
+    USER_VNCSX11V_CONFIG="$USER_HOME/.vnc/config.d/vncserver-x11-virtual"
+    if [ -f "$USER_XVNC_CONFIG" ] && [ ! -f "$USER_VNCSX11V_CONFIG" ]; then
+      echo "WARNING: Xvnc configuration found in $USER_XVNC_CONFIG."
+      echo "Any settings in this file will no longer apply to virtual mode unless they "
+      echo "are copied to $USER_VNCSX11V_CONFIG."
+      confirm "Copy the settings from this file? [y/n]: " && \
+        cp "$USER_XVNC_CONFIG" "$USER_VNCSX11V_CONFIG"
+      echo
+    fi
+  fi
+  # Enable SystemXorg.
+  if [ -z "$IS_ROOT" ]; then
+    echo "Enabling SystemXorg for user $USERNAME."
+    echo "(re-run as root to enable for all users)"
+    VNCSV_CONFIG="$USER_HOME/.vnc/config.d/vncserver-virtual"
+  else
+    echo "Enabling SystemXorg for all users."
+    echo "(re-run as a normal user to enable for just that user)"
+    VNCSV_CONFIG="/etc/vnc/config.d/vncserver-virtual"
+  fi
+  confirm "Are you sure? [y/n]: " || exit 0
+  echo
+  if [ -f "$VNCSV_CONFIG" ]; then
+    sed -i '/SystemXorg=/d' "$VNCSV_CONFIG"
+  fi
+  echo "SystemXorg=1" >> "$VNCSV_CONFIG"
+  echo "SystemXorg enabled."
+fi
+# Disables SystemXorg for virtual mode
+if [ "$disable_system_xorg" = "1" ]; then
+  IS_ROOT=""
+  if [ `id -u` -eq 0 ]; then
+    IS_ROOT="1"
+  else
+    USERNAME=`whoami`
+    USER_HOME=`eval echo "~$USERNAME"`
+  fi
+  echo
+  # Disable SystemXorg.
+  if [ -z "$IS_ROOT" ]; then
+    echo "Disabling SystemXorg for user $USERNAME."
+    echo "(re-run as root to disable for all users)"
+    VNCSV_CONFIG="$USER_HOME/.vnc/config.d/vncserver-virtual"
+  else
+    echo "Disabling SystemXorg for all users."
+    echo "(re-run as a normal user to disable for just that user)"
+    VNCSV_CONFIG="/etc/vnc/config.d/vncserver-virtual"
+  fi
+  confirm "Are you sure? [y/n]: " || exit 0
+  echo
+  if [ -f "$VNCSV_CONFIG" ]; then
+    sed -i '/SystemXorg=/d' "$VNCSV_CONFIG"
+  fi
+  echo "SystemXorg=0" >> "$VNCSV_CONFIG"
+  echo "SystemXorg disabled."
+fi
+# Create firewalld service config
+if [ "$init_firewalld" = "1" ]; then
+  fwdir=/usr/lib/firewalld/services
+  # Only do this for systems that use firewalld
+  if [ -d $fwdir ]; then
+
+    cfg=$fwdir/vncserver-x11-serviced.xml
+    backup $cfg
+    cat  > $cfg <<EOF
+<?xml version="1.0" encoding="utf-8"?>
+<service>
+  <short>VNC Server in Service Mode</short>
+  <description>VNC Server in Service Mode allows graphical remote access to the console session via the vncserver-x11-serviced service.</description>
+  <port protocol="tcp" port="5900"/>
+  <port protocol="udp" port="5900"/>
+</service>
+EOF
+    verify $cfg
+
+    cfg=$fwdir/vncserver-virtuald.xml
+    backup $cfg
+    cat  > $cfg <<EOF
+<?xml version="1.0" encoding="utf-8"?>
+<service>
+  <short>VNC Server in Virtual Mode daemon</short>
+  <description>VNC Server in Virtual Mode daemon allows graphical remote access to virtual sessions on-demand via the vncserver-virtuald service.</description>
+  <port protocol="tcp" port="5999"/>
+  <port protocol="udp" port="5999"/>
+</service>
+EOF
+    verify $cfg
+
+    firewall-cmd --reload >/dev/null 2>&1
+    echo "Installed firewalld service configuration. To enable access to VNC services from the public zone, use the following commands:"
+    echo "For VNC Server in Service Mode:"
+    echo "  firewall-cmd --zone=public --permanent --add-service=vncserver-x11-serviced"  
+    echo "For VNC Server in Virtual Mode daemon:"
+    echo "  firewall-cmd --zone=public --permanent --add-service=vncserver-virtuald"
+  fi
+fi

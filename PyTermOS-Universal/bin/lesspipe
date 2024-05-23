@@ -25,6 +25,7 @@
 #    $2  filename that was created during LESSOPEN
 
 TMPDIR=${TMPDIR:-/tmp}
+CONFIGDIR=${XDG_CONFIG_HOME:-~/.config}
 BASENAME=`basename $0`
 LESSFILE=lessfile
 
@@ -48,32 +49,41 @@ if [ $# -eq 1 ] ; then
 	# generate filename for possible use by lesspipe
 	umask 077
 	if [ $BASENAME = $LESSFILE ]; then
-		TMPFILE=`tempfile -d $TMPDIR -p lessf`
+		TMPFILE=`mktemp -p $TMPDIR lessfXXXXXX`
 		if [ -z "$TMPFILE" ]; then
-			echo >&2 "Could not find essential program 'tempfile'. Exiting"
-      exit 1
+			echo >&2 "TMPFILE variable is empty. Exiting"
+		exit 1
 		fi
 	fi
 
 	(
-		# possibly redirect stdout to a file for lessfile
-		if [ $BASENAME = $LESSFILE ]; then exec > $TMPFILE; fi
-
 		# Allow for user defined filters
-		#if [ -x ~/.lessfilter -a -O ~/.lessfilter ]; then
-		if [ -x ~/.lessfilter ]; then
-			~/.lessfilter "$1"
-			if [ $? -eq 0 ]; then
-				if [ $BASENAME = $LESSFILE ]; then
+		USERFILTER=
+		if [ -x "$CONFIGDIR/lessfilter" ]; then
+			USERFILTER="$CONFIGDIR/lessfilter"
+		elif [ -x ~/.lessfilter ]; then
+			USERFILTER=~/.lessfilter
+		fi
+		if [ -n "$USERFILTER" ]; then
+			if [ $BASENAME = $LESSFILE ]; then
+				"$USERFILTER" "$1" > $TMPFILE
+				if [ $? -eq 0 ]; then
 					if [ -s $TMPFILE ]; then
 						echo $TMPFILE
 					else
 						rm -f $TMPFILE
 					fi
+					exit 0
+				else
+					rm -f $TMPFILE
 				fi
-				exit 0
+			else
+				"$USERFILTER" "$1" && exit 0
 			fi
 		fi
+
+		# possibly redirect stdout to a file for lessfile
+		if [ $BASENAME = $LESSFILE ]; then exec > $TMPFILE; fi
 
 		# Decode file for less
 		case `echo "$1" | tr '[:upper:]' '[:lower:]'` in
@@ -98,7 +108,7 @@ if [ $# -eq 1 ] ; then
 				if [ -x "`which bunzip2`" ]; then bunzip2 -dc "$1"
 				else echo "No bunzip2 available"; fi ;;
 
-			*.deb|*.udeb|*.ddeb)
+			*.deb|*.udeb|*.ddeb|*.ipk)
 				echo "$1:"; dpkg --info "$1"
 				echo
 				echo '*** Contents:'; dpkg-deb --contents "$1"
@@ -114,6 +124,17 @@ if [ $# -eq 1 ] ; then
 					else
 						echo "No catdoc available";
 					fi
+				fi
+				;;
+
+			*.egg)
+				if [ -x "`which unzip`" ]; then
+					unzip -p "$1" EGG-INFO/PKG-INFO | \
+						sed '/^Description:/,/^\S/{/^Description:/d; /^\S/b; d}'
+					echo
+					unzip -v "$1"
+				else
+					echo "No unzip available"
 				fi
 				;;
 
@@ -192,6 +213,13 @@ if [ $# -eq 1 ] ; then
 					rpm -q -l -p "$1"
 				else echo "rpm isn't available, no query on rpm package possible"; fi ;;
 
+                        *.snap)
+                            if [ -x "`which snap`" ]; then snap info "$1"; fi
+                            if [ -x "`which unsquashfs`" ]; then
+                                echo
+                                echo '*** Contents:'; unsquashfs -ll -d '' "$1" 
+                            else echo "No unsquashfs available"; fi ;;
+                        
 			*.tar.gz|*.tgz|*.tar.z|*.tar.dz)
 				tar tzvf "$1" --force-local
 				;;
@@ -204,11 +232,36 @@ if [ $# -eq 1 ] ; then
 				fi
 				;;
 
+			*.tar.zst|*.tzst)
+				if [ -x "`which zstd`" ]; then
+					zstd -qdc "$1" | tar tfvv -
+				else
+					echo "No zstd available"
+				fi
+				;;
+
+			*.whl)
+				if [ -x "`which unzip`" ]; then
+					unzip -p "$1" '*.dist-info/METADATA' | sed '/^$/q'
+					unzip -v "$1"
+				else
+		 			echo "No unzip available"
+				fi
+				;;
+
 			*.xz)
 				if [ -x "`which xz`" ]; then
 					xz -dc "$1"
 				else
 					echo "No xz available"
+				fi
+				;;
+
+			*.zst)
+				if [ -x "`which zstd`" ]; then
+					zstd -qdc "$1"
+				else
+					echo "No zstd available"
 				fi
 				;;
 
@@ -257,6 +310,7 @@ elif [ $# -eq 2 ] ; then
 		if [ -n "$BASH" ]; then
 			if [ ! -O "$2" ]; then
 				echo "Error in deleting $2" > /dev/tty
+				exit 1
 			fi
 		fi
 

@@ -1,0 +1,42 @@
+#!/usr/bin/python3
+
+# ARandR -- Another XRandR GUI
+# Copyright (C) 2008 -- 2011 chrysn <chrysn@fsfe.org>
+# 
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+# 
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+"""Run ARandR GUI"""
+
+import sys
+import gettext
+
+# monkey patch gettext for local execution
+
+if sys.argv[0].startswith('./'):
+    old_find = gettext.find
+
+    def find_wrapper(domain, localedir=None, languages=None, all=False):
+        """Catch finds for arandr and redirect them to local files"""
+        if domain == 'arandr':
+            result = old_find(domain, './build/locale', languages, all)
+            if result:
+                return result
+        return old_find(domain, localedir, languages, all)
+
+    gettext.find = find_wrapper
+
+# defer importing and thus loading locales until monkey patching is done
+
+from screenlayout.gui import main
+main()

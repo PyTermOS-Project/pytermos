@@ -1,0 +1,9 @@
+#!/bin/sh
+# POSIX compliant script to search browser
+set -e # stop at first error
+#set -x # debug 
+
+BDOCUMENTSTEM="/usr/share/debian-reference"
+if [ -r $BDOCUMENTSTEM/index.html ]; then
+  /usr/bin/sensible-browser $BDOCUMENTSTEM/index.html
+fi

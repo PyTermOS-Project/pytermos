@@ -1,0 +1,999 @@
+#!/bin/sh
+
+# Raspberry Pi bootloader EEPROM updater.
+
+set -e
+
+script_dir=$(cd "$(dirname "$0")" && pwd)
+
+if [ -f /etc/default/rpi-eeprom-update ]; then
+   . /etc/default/rpi-eeprom-update
+fi
+
+LOCAL_MODE=0
+if [ -n "$FIRMWARE_ROOT" ]; then
+   # Provided by environment
+   true
+elif [ -d /lib/firmware/raspberrypi/bootloader ] || [ -d /lib/firmware/raspberrypi/bootloader-2711 ] || [ -d /lib/firmware/raspberrypi/bootloader-2712 ]; then
+   FIRMWARE_ROOT=/lib/firmware/raspberrypi/bootloader
+else
+   # Work from local git checkout
+   LOCAL_MODE=1
+   IGNORE_DPKG_CHECKSUMS=1
+   FIRMWARE_ROOT="${script_dir}/firmware"
+fi
+
+# Selects the release sub-directory
+FIRMWARE_RELEASE_STATUS=${FIRMWARE_RELEASE_STATUS:-default}
+FIRMWARE_BACKUP_DIR=${FIRMWARE_BACKUP_DIR:-/var/lib/raspberrypi/bootloader/backup}
+ENABLE_VL805_UPDATES=${ENABLE_VL805_UPDATES:-1}
+CM4_ENABLE_RPI_EEPROM_UPDATE=${CM4_ENABLE_RPI_EEPROM_UPDATE:-0}
+RPI_EEPROM_UPDATE_CONFIG_TOOL="${RPI_EEPROM_UPDATE_CONFIG_TOOL:-raspi-config}"
+
+# Self-update is preferred to using recovery.bin because it avoids modifiy the
+# boot partition in order to rename recovery.bin after use. Since the 2711 ROM
+# does not support network or USB MSD loading of recovery.bin self-update has to
+# be used with other boot modes anyway.
+
+# If RPI_EEPROM_SELF_UPDATE=1 then avoid installing recovery.bin so long as the
+# current bootloader version supports self-update from SD/MMC and that doesn't
+# look as though SELF_UPDATE has been disable in the EEPROM config or config.txt.
+RPI_EEPROM_SELF_UPDATE="${RPI_EEPROM_SELF_UPDATE:-0}"
+RPI_EEPROM_SELF_UPDATE_MIN_VER=1650968668
+
+DT_BOOTLOADER_TS=${DT_BOOTLOADER_TS:-/proc/device-tree/chosen/bootloader/build-timestamp}
+
+EXIT_SUCCESS=0
+EXIT_UPDATE_REQUIRED=1
+EXIT_FAILED=2
+EXIT_EEPROM_FROZEN=3
+# Reserved
+# EXIT_PREVIOUS_UPDATE_FAILED=4
+
+OVERWRITE_CONFIG=0
+# Timestamp for first release which doesn't have a timestamp field
+BOOTLOADER_FIRST_VERSION=1557513636
+EEPROM_SIZE=524288
+BOARD_INFO=
+BOARD_REVISION=
+BOARD_TYPE=
+BCM_CHIP=
+
+# Newer board revisions embed the VLI firmware in the bootloader EEPROM and
+# there is no way to separately update the VLI firmware. Consequently,
+# standalone vl805 update files do not trigger automatic updates.
+# recovery.bin and the SPI bootloader ignore vl805.bin files on boards
+# without a dedicated VL805 EEPROM.
+HAVE_VL805_EEPROM=0
+
+TMP_EEPROM_IMAGE=""
+TMP_BOOTFS_MNT=""
+
+VL805_CURRENT_VERSION=
+VL805_UPDATE_VERSION=
+
+# The update actions selected by the version check
+ACTION_UPDATE_BOOTLOADER=0
+ACTION_UPDATE_VL805=0
+CHECKSUMS=''
+
+cleanup() {
+   if [ -f "${CHECKSUMS}" ]; then
+      rm -f "${CHECKSUMS}"
+   fi
+   if [ -f "${TMP_EEPROM_IMAGE}" ]; then
+      rm -f "${TMP_EEPROM_IMAGE}"
+   fi
+   if [ -f "${TMP_EEPROM_CONFIG}" ]; then
+      rm -f "${TMP_EEPROM_CONFIG}"
+   fi
+   if [ -f "${NEW_EEPROM_CONFIG}" ]; then
+      rm -f "${NEW_EEPROM_CONFIG}"
+   fi
+   if [ -f "${FLASHROM_LOG}" ]; then
+      rm -f "${FLASHROM_LOG}"
+   fi
+   if [ -d "${TMP_BOOTFS_MNT}" ]; then
+      umount "${TMP_BOOTFS_MNT}"
+      rmdir "${TMP_BOOTFS_MNT}"
+   fi
+   TMP_BOOTFS_MNT=
+   TMP_EEPROM_IMAGE=
+   TMP_EEPROM_CONFIG=
+   NEW_EEPROM_CONFIG=
+   FLASHROM_LOG=
+}
+trap cleanup EXIT
+
+die() {
+   echo "$@" >&2
+   exit ${EXIT_FAILED}
+}
+
+getBootloaderConfig() {
+   # Prefer extracting bootloader's config from DT.
+   #
+   # In order to find the right nvmem device, we build the sysfs path of the
+   # bootloader reserved memory DT node to then match that path against all
+   # nvmem device's ofnode path.
+   #
+   # If the path isn't there, default to using vcgencmd.
+
+   local blconfig_alias="/sys/firmware/devicetree/base/aliases/blconfig"
+   local blconfig_nvmem_path=""
+
+   if [ -f "${blconfig_alias}" ]; then
+      local blconfig_ofnode_path="/sys/firmware/devicetree/base"$(strings "${blconfig_alias}")""
+      local blconfig_ofnode_link=$(find -L /sys/bus/nvmem -maxdepth 3 -samefile "${blconfig_ofnode_path}" 2>/dev/null)
+
+      if [ -e "${blconfig_ofnode_link}" ]; then
+         blconfig_nvmem_path=$(dirname "${blconfig_ofnode_link}")
+      fi
+   fi
+
+   if [ -n "${blconfig_nvmem_path}" ]; then
+      cat "${blconfig_nvmem_path}"/nvmem
+   else
+      vcgencmd bootloader_config
+   fi
+}
+
+prepareImage()
+{
+   [ -f "${BOOTLOADER_UPDATE_IMAGE}" ] || die "EEPROM image '${BOOTLOADER_UPDATE_IMAGE}' not found"
+   TMP_EEPROM_IMAGE="$(mktemp)"
+   TMP_EEPROM_CONFIG="$(mktemp)"
+   NEW_EEPROM_CONFIG="$(mktemp)"
+
+   mkdir -p "${FIRMWARE_BACKUP_DIR}"
+
+   # Backup the configuration of the currently loaded bootloader
+   getBootloaderConfig > "${TMP_EEPROM_CONFIG}"
+   backup="${FIRMWARE_BACKUP_DIR}/pieeprom-backup-$(date +%Y%m%d-%H%M%S).conf"
+   cp -f "${TMP_EEPROM_CONFIG}" "${backup}"
+
+   if [ -x "${EEPROM_CONFIG_HOOK}" ]; then
+      echo "Running EEPROM config hook ${EEPROM_CONFIG_HOOK}"
+      if ! "${EEPROM_CONFIG_HOOK}" -u "${BOOTLOADER_UPDATE_IMAGE}" < "${TMP_EEPROM_CONFIG}" > "${NEW_EEPROM_CONFIG}"; then
+         echo "EEPROM config hook \"${EEPROM_CONFIG_HOOK}\"  failed. Using original configuration"
+         cp -f "${TMP_EEPROM_CONFIG}" "${NEW_EEPROM_CONFIG}"
+      fi
+   else
+      cp -f "${TMP_EEPROM_CONFIG}" "${NEW_EEPROM_CONFIG}"
+   fi
+
+   if [ "$(wc -l "${NEW_EEPROM_CONFIG}" | awk '{print $1}')" -lt 3 ]; then
+      # Don't propagate empty EEPROM config files and also prevent the initial
+      # bootloader config with WAKE_ON_GPIO=0 propgating to newer versions by
+      # accident.
+      OVERWRITE_CONFIG=1
+   fi
+
+   cp -f "${BOOTLOADER_UPDATE_IMAGE}" "${TMP_EEPROM_IMAGE}"
+
+   if [ "${OVERWRITE_CONFIG}" = 0 ]; then
+      "${script_dir}/rpi-eeprom-config" \
+         --out "${TMP_EEPROM_IMAGE}" \
+         --config "${NEW_EEPROM_CONFIG}" \
+         --timestamp "$(date -u +%s)" \
+         "${BOOTLOADER_UPDATE_IMAGE}"
+   else
+      "${script_dir}/rpi-eeprom-config" \
+         --out "${TMP_EEPROM_IMAGE}" \
+         --timestamp "$(date -u +%s)" \
+         "${BOOTLOADER_UPDATE_IMAGE}"
+   fi
+}
+
+applyRecoveryUpdate()
+{
+   [ -n "${BOOTLOADER_UPDATE_IMAGE}" ] || [ -n "${VL805_UPDATE_IMAGE}" ] || die "No update images specified"
+
+   getBootloaderCurrentVersion
+   BOOTLOADER_UPDATE_VERSION=$(strings "${BOOTLOADER_UPDATE_IMAGE}" | grep BUILD_TIMESTAMP | sed 's/.*=//g')
+   if [ "${BOOTLOADER_CURRENT_VERSION}" -gt "${BOOTLOADER_UPDATE_VERSION}" ]; then
+      echo "   WARNING: Installing an older bootloader version."
+      echo "            Update the rpi-eeprom package to fetch the latest bootloader images."
+      echo
+   fi
+   echo "   CURRENT: $(date -u "-d@${BOOTLOADER_CURRENT_VERSION}") (${BOOTLOADER_CURRENT_VERSION})"
+   echo "    UPDATE: $(date -u "-d@${BOOTLOADER_UPDATE_VERSION}") (${BOOTLOADER_UPDATE_VERSION})"
+
+   findBootFS
+   echo "    BOOTFS: ${BOOTFS}"
+
+   if [ -n "${BOOTLOADER_UPDATE_IMAGE}" ]; then
+        [ -f "${BOOTLOADER_UPDATE_IMAGE}" ] || die "${BOOTLOADER_UPDATE_IMAGE} not found"
+
+        TMP_EEPROM_IMAGE="$(mktemp)"
+        prepareImage
+
+        # Generate a .sig file containing the sha256 hash of the EEPROM image
+        # and the current timestamp.
+        rpi-eeprom-digest -i "${TMP_EEPROM_IMAGE}" -o "${BOOTFS}/pieeprom.sig"
+
+        cp -fv "${TMP_EEPROM_IMAGE}" "${BOOTFS}/pieeprom.upd" \
+                || die "Failed to copy ${TMP_EEPROM_IMAGE} to ${BOOTFS}"
+
+        # For NFS mounts ensure that the files are readable to the TFTP user
+        chmod -f go+r "${BOOTFS}/pieeprom.upd" "${BOOTFS}/pieeprom.sig" \
+                || die "Failed to set permissions on eeprom update files"
+   fi
+
+   if [ -n "${VL805_UPDATE_IMAGE}" ]; then
+        rpi-eeprom-digest -i "${VL805_UPDATE_IMAGE}" -o "${BOOTFS}/vl805.sig"
+
+        cp -f "${VL805_UPDATE_IMAGE}" "${BOOTFS}/vl805.bin" \
+                || die "Failed to copy ${VL805_UPDATE_IMAGE} to ${BOOTFS}/vl805.bin"
+
+        # For NFS mounts ensure that the files are readable to the TFTP user
+        chmod -f go+r "${BOOTFS}/vl805.bin" "${BOOTFS}/vl805.sig" \
+                || die "Failed to set permissions on eeprom update files"
+   fi
+
+   if getBootloaderConfig | grep -q ENABLE_SELF_UPDATE=0; then
+      # Self update has been disabled in the EEPROM config so recovery.bin
+      # must be used to clear this.
+      RPI_EEPROM_SELF_UPDATE=0
+   fi
+
+   # Setting bootloader_update=0 was really intended for use with network-boot with shared
+   # config.txt files. However, if it looks as though self-update has been disabled then
+   # assume recovery.bin is required.
+   config_txt="${BOOTFS}/config.txt"
+   if [ -f "${config_txt}" ]; then
+      if grep -q "bootloader_update=0" "${config_txt}"; then
+         RPI_EEPROM_SELF_UPDATE=0
+      fi
+   fi
+
+   [ "${BOOTLOADER_CURRENT_VERSION}" -ge "${RPI_EEPROM_SELF_UPDATE_MIN_VER}" ] || RPI_EEPROM_SELF_UPDATE=0
+
+   # For immediate updates via flash the recovery.bin update is created and then discarded if the
+   # flashrom update was successful. For SD boot (most common) this provides a rollback in the event
+   # of power loss.
+   if [ "${RPI_EEPROM_USE_FLASHROM}" = 1 ]; then
+      echo
+      echo "UPDATING bootloader."
+      echo
+      echo "*** WARNING: Do not disconnect the power until the update is complete ***"
+      echo "If a problem occurs then the Raspberry Pi Imager may be used to create"
+      echo "a bootloader rescue SD card image which restores the default bootloader image."
+      echo
+      FLASHROM_LOG="$(mktemp)"
+      echo "flashrom -p linux_spi:dev=${SPIDEV},spispeed=16000 -w ${BOOTFS}/pieeprom.upd"
+      if flashrom -p linux_spi:dev=${SPIDEV},spispeed=16000 -w "${BOOTFS}/pieeprom.upd" > "${FLASHROM_LOG}"; then
+         # Success - remove update files from the boot partition
+         removePreviousUpdates
+         echo "UPDATE SUCCESSFUL"
+      else
+         # Leave the recovery files in case the EEPROM has been partially updated
+         cat "${FLASHROM_LOG}"
+         die "UPDATE FAILED"
+      fi
+      return
+   elif [ "${RPI_EEPROM_SELF_UPDATE}" = "1" ]; then
+      echo "Using self-update"
+   else
+      echo "Copying recovery.bin to ${BOOTFS} for EEPROM update"
+      cp -f "${RECOVERY_BIN}" "${BOOTFS}/recovery.bin" || die "Failed to copy ${RECOVERY_BIN} to ${BOOTFS}"
+   fi
+
+   echo ""
+   echo "EEPROM updates pending. Please reboot to apply the update."
+   echo "To cancel a pending update run \"sudo rpi-eeprom-update -r\"."
+}
+
+applyUpdate() {
+   [ "$(id -u)" = "0" ] || die "* Must be run as root - try 'sudo rpi-eeprom-update'"
+
+   if [ "${IGNORE_DPKG_CHECKSUMS}" = 0 ]; then
+      (
+         package_checksums_file="${PACKAGE_INFO_DIR}/rpi-eeprom.md5sums"
+
+         if ! grep -qE '\.bin$' "${PACKAGE_INFO_DIR}/rpi-eeprom.md5sums"; then
+            # Try the old rpi-eeprom-images package
+            package_checksums_file="${PACKAGE_INFO_DIR}/rpi-eeprom-images.md5sums"
+         fi
+
+         CHECKSUMS=$(mktemp)
+         grep -E '\.bin$' "${package_checksums_file}" > "${CHECKSUMS}"
+         cd /
+         if ! md5sum -c "${CHECKSUMS}" > /dev/null 2>&1; then
+            md5sum -c "${CHECKSUMS}"
+            die "rpi-eeprom checksums failed - try reinstalling this package"
+         fi
+      ) || die "Unable to validate EEPROM image package checksums"
+   fi
+
+   # Disable flashrom if the SPI device is not found
+   if [ "${RPI_EEPROM_USE_FLASHROM}" = 1 ]; then
+      flashrom_probe_ok=0
+      if ! [ -e "${SPIDEV}" ]; then
+         echo "WARNING: SPI device ${SPIDEV} not found. Setting RPI_EEPROM_USE_FLASHROM to 0"
+      fi
+
+      if ! flashrom -p linux_spi:dev=${SPIDEV},spispeed=16000 > /dev/null 2>&1; then
+         echo "WARNING: Flashrom probe of ${SPIDEV} failed"
+      else
+         flashrom_probe_ok=1
+      fi
+      if [ "${flashrom_probe_ok}" != 1 ]; then
+         echo "Setting RPI_EEPROM_USE_FLASHROM to 0"
+         echo
+         export RPI_EEPROM_USE_FLASHROM=0
+      fi
+   fi
+
+   applyRecoveryUpdate
+}
+
+BOOTLOADER_CURRENT_VERSION=
+getBootloaderCurrentVersion() {
+   if [ -f "${DT_BOOTLOADER_TS}" ]; then
+      # Prefer device-tree to vcgencmd
+      BOOTLOADER_CURRENT_VERSION=$(printf "%d" "0x$(od "${DT_BOOTLOADER_TS}" -v -An -t x1 | tr -d ' ' )")
+   elif vcgencmd bootloader_version | grep -q timestamp; then
+      BOOTLOADER_CURRENT_VERSION=$(vcgencmd bootloader_version | grep timestamp | awk '{print $2}')
+      if [ "${BOOTLOADER_CURRENT_VERSION}" = "0" ]; then
+         # If a timestamp of zero is returned then it's new firmware but an
+         # old bootloader. Assume bootloader v0
+         BOOTLOADER_CURRENT_VERSION="${BOOTLOADER_FIRST_VERSION}"
+      fi
+   else
+      # New bootloader / old firmware ? Try to parse the date
+      BOOTLOADER_CURRENT_VERSION=$(date -u +%s --date "$(vcgencmd bootloader_version | head -n1)" 2>/dev/null || true)
+   fi
+
+   # Failed to parse the version. Default to the initial production release.
+   if [ -z "${BOOTLOADER_CURRENT_VERSION}" ]; then
+      BOOTLOADER_CURRENT_VERSION="${BOOTLOADER_FIRST_VERSION}"
+   fi
+}
+
+# Find latest applicable update version
+BOOTLOADER_UPDATE_IMAGE=""
+BOOTLOADER_UPDATE_VERSION=0
+getBootloaderUpdateVersion() {
+   BOOTLOADER_UPDATE_VERSION=0
+   match=".*/pieeprom-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].bin"
+   latest="$(find "${FIRMWARE_IMAGE_DIR}/" -maxdepth 1 -type f -follow -size "${EEPROM_SIZE}c" -regex "${match}" | sort -r | head -n1)"
+   if [ -f "${latest}" ]; then
+      BOOTLOADER_UPDATE_VERSION=$(strings "${latest}" | grep BUILD_TIMESTAMP | sed 's/.*=//g')
+      BOOTLOADER_UPDATE_IMAGE="${latest}"
+   fi
+}
+
+chipNotSupported() {
+   echo "Device does not a have a Raspberry Pi bootloader EEPROM (e.g. Pi 4 or Pi 5). Skipping bootloader update."
+   exit ${EXIT_SUCCESS}
+}
+
+checkDependencies() {
+
+   if [ -f "/sys/firmware/devicetree/base/system/linux,revision" ]; then
+      BOARD_INFO="$(od -v -An -t x1 /sys/firmware/devicetree/base/system/linux,revision | tr -d ' \n')"
+   elif grep -q Revision /proc/cpuinfo; then
+      BOARD_INFO="$(sed -n '/^Revision/s/^.*: \(.*\)/\1/p' < /proc/cpuinfo)"
+   elif command -v vcgencmd > /dev/null; then
+      BOARD_INFO="$(vcgencmd otp_dump | grep '30:' | sed 's/.*://')"
+   else
+      echo "No Raspberry Pi board info found"
+      exit ${EXIT_SUCCESS}
+   fi
+
+   if [ $(((0x$BOARD_INFO >> 23) & 1)) = 0 ]; then
+      chipNotSupported
+   fi
+
+   if [ $(((0x$BOARD_INFO >> 12) & 15)) = 3 ]; then
+      BCM_CHIP=2711
+      EEPROM_SIZE=524288
+      BOOTLOADER_AUTO_UPDATE_MIN_VERSION="${BOOTLOADER_AUTO_UPDATE_MIN_VERSION:-1599135103}"
+
+      SPIDEV=/dev/spidev0.0
+   elif [ $(((0x$BOARD_INFO >> 12) & 15)) = 4 ]; then
+      BCM_CHIP=2712
+      EEPROM_SIZE=2097152
+      BOOTLOADER_AUTO_UPDATE_MIN_VERSION="${BOOTLOADER_AUTO_UPDATE_MIN_VERSION:-1704470260}"
+      SPIDEV=/dev/spidev10.0
+      # Default is to use flashrom if availableon BCM2712
+      RPI_EEPROM_USE_FLASHROM=${RPI_EEPROM_USE_FLASHROM:-1}
+   else
+      chipNotSupported
+   fi
+
+   # Default to off - in the future Raspberry Pi 5 may default to using flashrom if
+   # flashrom is available.
+   [ -z "${RPI_EEPROM_USE_FLASHROM}" ] && RPI_EEPROM_USE_FLASHROM=0
+   if [ "${RPI_EEPROM_USE_FLASHROM}" -eq 1 ] && ! command -v flashrom > /dev/null; then
+      echo "WARNING: flashrom not found. Setting RPI_EEPROM_USE_FLASHROM to 0"
+      RPI_EEPROM_USE_FLASHROM=0
+   fi
+
+   FIRMWARE_IMAGE_DIR="${FIRMWARE_ROOT}-${BCM_CHIP}/${FIRMWARE_RELEASE_STATUS}"
+   if ! [ -d "${FIRMWARE_IMAGE_DIR}" ]; then
+      # Use unadorned name for backwards compatiblity
+      FIRMWARE_IMAGE_DIR="${FIRMWARE_ROOT}/${FIRMWARE_RELEASE_STATUS}"
+   fi
+   RECOVERY_BIN=${RECOVERY_BIN:-${FIRMWARE_IMAGE_DIR}/recovery.bin}
+
+   BOARD_TYPE=$(((0x$BOARD_INFO >> 4) & 0xff))
+   BOARD_REVISION=$((0x$BOARD_INFO & 0xf))
+
+   if [ ${BOARD_TYPE} -eq 20 ] && [ "${CM4_ENABLE_RPI_EEPROM_UPDATE}" != '1' ]; then
+      # For CM4, USB device boot is the recommended method for EEPROM updates.
+      echo "rpi-eeprom-update is not enabled by default on CM4."
+      echo "The recommended method for flashing the EEPROM is rpiboot."
+      echo "See: https://github.com/raspberrypi/usbboot/blob/master/Readme.md"
+      echo "Run with -h for more information."
+      echo
+      echo "To enable flashrom programming of the EEPROM"
+      echo "Add these the following entries to /etc/default/rpi-eeprom-update"
+      echo "RPI_EEPROM_USE_FLASHROM=1"
+      echo "CM4_ENABLE_RPI_EEPROM_UPDATE=1"
+      echo 
+      echo "and these entries to config.txt and reboot"
+      echo "[cm4]"
+      echo "dtparam=spi=on"
+      echo "dtoverlay=audremap"
+      echo "dtoverlay=spi-gpio40-45"
+      echo
+      exit ${EXIT_SUCCESS}
+   fi
+
+   if [ ${BOARD_TYPE} -eq 17 ] && [ ${BOARD_REVISION} -lt 4 ]; then
+      HAVE_VL805_EEPROM=1
+   else
+      HAVE_VL805_EEPROM=0
+   fi
+
+   if ! command -v rpi-eeprom-digest > /dev/null; then
+      die "rpi-eeprom-digest not found. Try re-installing the rpi-eeprom package"
+   fi
+
+   if ! command -v lspci > /dev/null; then
+      die "lspci not found. Try installing the pciutils package."
+   fi
+
+   if ! command -v strings > /dev/null; then
+      die "strings not found. Try installing the binutils package."
+   fi
+
+   # vcgencmd bootloader_version is deprecated. Use device-tree if available to
+   # reduce the number of dependencies on VCHI.
+   if ! [ -f "${DT_BOOTLOADER_TS}" ]; then
+      if ! command -v vcgencmd > /dev/null; then
+         die "vcgencmd not found. Try installing the raspi-utils package."
+      fi
+   fi
+
+   if [ ! -e "${FIRMWARE_IMAGE_DIR}" ]; then
+      die "EEPROM updates directory ${FIRMWARE_IMAGE_DIR} not found."
+   fi
+
+   # If a board revision specific firmware directory is defined then use that
+   # in preference to the generic directory.
+   if [ -e "${FIRMWARE_IMAGE_DIR}-${BOARD_INFO}" ]; then
+      FIRMWARE_IMAGE_DIR="${FIRMWARE_IMAGE_DIR}-${BOARD_INFO}"
+   fi
+
+   if ! getBootloaderConfig > /dev/null; then
+      die "Unable to get bootloader config, please update VC firmware and reboot."
+   fi
+
+   if ! command -v sha256sum > /dev/null; then
+      die "sha256sum not found. Try installing the coreutils package."
+   fi
+
+   if [ "${BCM_CHIP}" = 2711 ] && [ ! -f "${RECOVERY_BIN}" ]; then
+      die "${RECOVERY_BIN} not found."
+   fi
+}
+
+usage() {
+cat <<EOF
+rpi-eeprom-update [options]... [FILE]
+
+Bootloader EEPROM update tool for the Raspberry Pi 4 and Raspberry Pi 5.
+
+This script also updates the SPI EEPROM image for the VL805 USB HC
+firmware on early Pi4B boards where the USB firmware is stored in 
+a dedicated SPI EEPROM instead of embedding it in the bootloader
+EEPROM. Raspberry Pi 5 uses the RP1.
+
+The default update mechanism writes recovery.bin and the EEPROM update
+image(s) (pieeprom.upd and vl805.bin (if required)) to the boot partition.
+The SHA256 hash of the corresponding images are written to pieeprom.sig
+and/or vl805.sig. This guards against file system corruption which could
+cause the EEPROM to be flashed with an invalid image. This is not a
+security check.
+
+At the next reboot the ROM runs recovery.bin which updates EEPROM(s).
+If the update was successful recovery.bin renames itself to recovery.000
+to prevent it from running a second time then resets the system.
+The system should then boot normally.
+
+If /boot does not correspond to the boot partition and this
+is not a NOOBS system, then the mount point for BOOTFS should be defined
+in /etc/default/rpi-eeprom-update by defining the BOOTFS variable.
+
+A backup of the current EEPROM config file is written to ${FIRMWARE_BACKUP_DIR}
+before applying the update.
+
+Unless the -d flag is specified, the current bootloader configuration is
+retained.
+
+Options:
+   -a Automatically install bootloader and USB (VLI) EEPROM updates.
+   -A Specify which type of EEPROM to automatically update (vl805 or bootloader)
+   -b Outputs the path that pending EEPROM updates will be written to.
+   -d Use the default bootloader config, or if a file is specified using the -f
+      flag use the config in that file. This option only applies when a
+      bootloader EEPROM update is needed; if the bootloader EEPROM is up to date
+      then its config will not be changed.
+   -f Install the given file instead of the latest applicable update
+      Ignores the FREEZE_VERSION flag in bootloader and is intended for manual
+      firmware updates.
+   -h Display help text and exit
+   -j Write status information using JSON notation (requires -m option)
+   -l Returns the full path to the latest available EEPROM image file according
+      to the FIRMWARE_RELEASE_STATUS and FIRMWARE_IMAGE_DIR settings.
+   -m Write status information to the given file when run without -a or -f
+   -r Removes temporary EEPROM update files from the boot partition. This also
+      cancels a pending update.
+   -s Skips silent, automatic upgrades for default releases if the current
+      bootloader release is newer than the version specified by
+      BOOTLOADER_AUTO_UPDATE_MIN_VERSION ${BOOTLOADER_AUTO_UPDATE_MIN_VERSION}
+   -u Install the specified VL805 (USB EEPROM) image file.
+
+Environment:
+Environment variables should be defined in /etc/default/rpi-eeprom-update
+
+EEPROM_CONFIG_HOOK
+
+Specifies the path of an optional script which post-processes the
+configuration file before it is applied to the new image. The modified
+output must contain at least 3 lines and should contain WAKE_ON_GPIO
+and POWER_OFF_ON_HALT settings.
+
+FIRMWARE_RELEASE_STATUS
+
+Specifies the release status of the firmware to apply.
+
+Before selecting a firmware release directory this script checks whether there
+is a board revision specific variant e.g. default-c03111. If present then the
+board-revision specific version is used in preference.
+
+Release status:
+Bootloader releases follow a pipeline where images are released to the 'latest'
+directory first. The binaries are then promoted to 'default' once this
+becomes the recommended minimum version and has been proven over time 
+to be stable.
+
+default:
+The default bootloader image which supports all current models and hardware
+revisions. If there is an important bug fix or hardware change that could
+affect most users then the BOOTLOADER_AUTO_UPDATE_MIN_VERSION is updated
+causing the update to be applied the next time the rpi-eeprom APT package is
+updated.
+
+latest:
+Contains new features, bug fixes and performance improvements.
+
+As far as rpi-eeprom-update is concerned FIRMWARE_RELEASE_STATUS is just
+the subdirectory mapping under ${FIRMWARE_ROOT}. Therefore, custom release
+directories are supported by creating the relevant directory and changing
+the FIRMWARE_RELEASE_STATUS environment variable.
+
+The 'default' and 'latest' release names are symlinks to the old directory
+names of 'critical' / 'stable'.
+
+Examples:
+To extract the configuration file from an EEPROM image:
+   rpi-eeprom-config pieeprom.bin --out bootconf.txt
+
+To update the configuration file in an EEPROM image:
+   rpi-eeprom-config pieeprom.bin --config bootconf.txt --out pieeprom-new.bin
+
+To flash the new image:
+   sudo rpi-eeprom-update -d -f ./pieeprom-new.bin
+
+The syntax is the same as config.txt See online documentation for the list of parameters.
+
+The official documentation for the Raspberry Pi bootloader EEPROM is available at
+   https://www.raspberrypi.com/documentation/computers/raspberry-pi.html#raspberry-pi-4-boot-eeprom
+
+Compute Module 4 (CM4):
+
+CM4 is designed to support embedded applications where physical access to the CM4
+may be limited.  An invalid bootloader configuration or software bug could
+cause the system to fail to boot so automatic updates are disabled. We also
+recommend write-protecting the SPI EPPROM after flashing it using usbboot.
+
+CM4 bootloader and EEPROM update instructions:
+   https://www.raspberrypi.com/documentation/computers/compute-module.html#cm4bootloader
+
+The CM4 ROM does not support running recovery.bin from the EMMC on CM4 so this service
+is disabled by default. SELF_UPDATE from USB or Network boot is supported but this
+must first be enabled by removing ENABLE_SELF_UPDATE=0 from the EEPROM config
+via usbboot.
+
+After enabling self-update set the CM4_ENABLE_RPI_EEPROM_UPDATE=1 environment
+variable or define it in /etc/default/rpi-eeprom-update.
+
+N.B. If there is a power failure during SELF_UPDATE the EEPROM write may fail and
+usbboot must be used to flash the bootloader EEPROM. SELF_UPDATE is not recommended
+for updating the bootloader on remote systems.
+
+FLASHROM:
+
+If the RPI_EEPROM_USE_FLASHROM variable is set to 1 then flashrom is used to perform
+an immediate update to the SPI flash rather than installing the recovery.bin plus
+pieeprom.upd files. The power must not be disconnected during this update otherwise the
+EEPROM will need to be re-flashed using the Rasberry Pi Imager bootloader restore feature.
+
+On Raspberry Pi 4, CM4, CM4-S and Pi400 flashrom updates are not enabled by default
+because the SPI GPIOs are shared with analog audio. To enable this add the following
+entries to config.txt. This moves analog audio to GPIO pins 12,13 and may not be
+compatible with some HATS / CM4 IO boards.
+
+dtparam=spi=on
+dtoverlay=audremap
+dtoverlay=spi-gpio40-45
+
+EOF
+  exit ${EXIT_SUCCESS}
+}
+
+printVersions()
+{
+   if [ "${ACTION_UPDATE_BOOTLOADER}" = 1 ]; then
+      echo "BOOTLOADER: update available"
+   else
+      echo "BOOTLOADER: up to date"
+   fi
+
+   echo "   CURRENT: $(date -u "-d@${BOOTLOADER_CURRENT_VERSION}") (${BOOTLOADER_CURRENT_VERSION})"
+   echo "    LATEST: $(date -u "-d@${BOOTLOADER_UPDATE_VERSION}") (${BOOTLOADER_UPDATE_VERSION})"
+   echo "   RELEASE: ${FIRMWARE_RELEASE_STATUS} (${FIRMWARE_IMAGE_DIR})"
+   echo "            Use ${RPI_EEPROM_UPDATE_CONFIG_TOOL} to change the release."
+
+   if [ "${BCM_CHIP}" = 2711 ]; then
+      echo ""
+      if [ "${HAVE_VL805_EEPROM}" = 1 ]; then
+         echo "  VL805_FW: Dedicated VL805 EEPROM"
+      else
+         echo "  VL805_FW: Using bootloader EEPROM"
+      fi
+      if [ "${ACTION_UPDATE_VL805}" = 1 ]; then
+         echo "   VL805: update available"
+      else
+         if [ "$(id -u)" = "0" ]; then
+            echo "     VL805: up to date"
+         else
+            echo "     VL805: version unknown. Try sudo rpi-eeprom-update"
+         fi
+      fi
+
+      echo "   CURRENT: ${VL805_CURRENT_VERSION}"
+      echo "    LATEST: ${VL805_UPDATE_VERSION}"
+   fi
+}
+
+findBootFS()
+{
+   # recovery.bin is loaded by the ROM from the boot partition, this is normally
+   # ${BOOTFS} but on NOOBS this is /dev/mmcblk0p1 with volume label RECOVERY
+   # If ${BOOTFS} is not writable OR is not on /dev/mmcblk0 then error because the ROM
+   # can only load recovery.bin from the on-board SD-CARD slot or the EEPROM.
+
+   if blkid | grep -qE "/dev/mmcblk0p1.*LABEL_FATBOOT.*RECOVERY.*TYPE.*vfat"; then
+      TMP_BOOTFS_MNT="$(mktemp -d)"
+      mount /dev/mmcblk0p1 "${TMP_BOOTFS_MNT}"
+      BOOTFS="${TMP_BOOTFS_MNT}"
+   elif [ -z "$BOOTFS" ]; then
+      if ! BOOTFS=$(/usr/lib/raspberrypi-sys-mods/get_fw_loc 2> /dev/null); then
+         for BOOTFS in /boot/firmware /boot; do
+            if [ -f "${BOOTFS}/config.txt" ]; then
+               break
+            elif findmnt --fstab "$BOOTFS" > /dev/null; then
+               break
+            fi
+         done
+      fi
+   fi
+
+   # If BOOTFS is not a directory or doesn't contain any .elf files then
+   # it's probably not the boot partition.
+   [ -d "${BOOTFS}" ] || die "BOOTFS: \"${BOOTFS}\" is not a directory"
+
+   if [ "${BCM_CHIP}" = 2712 ]; then
+      if ! [ -e "${BOOTFS}/config.txt" ]; then
+         echo "WARNING: BOOTFS: \"${BOOTFS}/config.txt\" not found. Please check boot directory"
+      fi
+   else
+      if [ "$(find "${BOOTFS}/" -name "*.elf" | wc -l)" = 0 ]; then
+         echo "WARNING: BOOTFS: \"${BOOTFS}\" contains no .elf files. Please check boot directory"
+      fi
+   fi
+}
+
+getVL805CurrentVersion()
+{
+   # The version number is obtained by examing a section of PCI config
+   # space which is only accessible as root. If the command is not run as
+   # root then treat the version as unknown and skip VLI updates.
+   VL805_CURRENT_VERSION=""
+
+   if [ "${BCM_CHIP}" = 2711 ]; then
+      if [ "$(id -u)" = "0" ]; then
+            vlver="$(lspci -d 1106:3483 -xxx | awk '/^50:/ { print "VL805 FW version: " $5 $4 $3 $2 }')"
+         if [ -n "${vlver}" ]; then
+            VL805_CURRENT_VERSION="${vlver#*: }"
+         fi
+      fi
+   fi
+}
+
+getVL805UpdateVersion()
+{
+   # The VL805 version number is an eight character hex string. Select the
+   # largest number for the newest version.
+   # The vl805.latest version is retained for backwards compatibility with
+   # thirdparty scripts (are there any?) but it not used by this script and
+   # is deprecated.
+   VL805_UPDATE_VERSION=""
+   match='.*/vl805-.*.bin'
+   ver=$(find "${FIRMWARE_IMAGE_DIR}" -maxdepth 1 -type f -follow -regex "${match}" | sed 's/.*\/vl805-\([0-9a-f]*\)\.bin/\1/' | sort -r | head -n1)
+   if [ -f "${FIRMWARE_IMAGE_DIR}/vl805-${ver}.bin" ]; then
+      VL805_UPDATE_VERSION="${ver}"
+      VL805_UPDATE_IMAGE="${FIRMWARE_IMAGE_DIR}/vl805-${ver}.bin"
+   fi
+}
+
+# Retrieve the version information and determine whether newer
+# versions are available.
+lookupVersionInfo()
+{
+   getBootloaderCurrentVersion
+   getBootloaderUpdateVersion
+
+   getVL805CurrentVersion
+
+   ACTION_UPDATE_BOOTLOADER=0
+   ACTION_UPDATE_VL805=0
+
+   if [ "${BOOTLOADER_UPDATE_VERSION}" -gt "${BOOTLOADER_CURRENT_VERSION}" ]; then
+      ACTION_UPDATE_BOOTLOADER=1
+   else
+      BOOTLOADER_UPDATE_IMAGE=""
+   fi
+
+   # If the '-s' flag for silent updates is specified then only update the
+   # bootloader if the current version is older than the minimum version.
+   if [ "${SILENT_UPDATE}" = 1 ] && [ -n "${BOOTLOADER_AUTO_UPDATE_MIN_VERSION}" ] && [ "${ACTION_UPDATE_BOOTLOADER}" = 1 ]; then
+      if [ "${FIRMWARE_RELEASE_STATUS}" = "critical" ] || [ "${FIRMWARE_RELEASE_STATUS}" = "default" ]; then
+         if [ "${BOOTLOADER_CURRENT_VERSION}" -ge "${BOOTLOADER_AUTO_UPDATE_MIN_VERSION}" ]; then
+            echo "Skipping automatic bootloader upgrade. current ${BOOTLOADER_CURRENT_VERSION} >= min ${BOOTLOADER_AUTO_UPDATE_MIN_VERSION}"
+            echo ""
+
+            # Clear the update requried flag
+            ACTION_UPDATE_BOOTLOADER=0
+            BOOTLOADER_UPDATE_IMAGE=""
+         fi
+      fi
+   fi
+
+   if [ "${HAVE_VL805_EEPROM}" = 1 ]; then
+      getVL805UpdateVersion
+      if [ -n "${VL805_CURRENT_VERSION}" ] && [ -n "${VL805_UPDATE_VERSION}" ]; then
+         if [ "$((0x${VL805_CURRENT_VERSION}))" -lt "$((0x${VL805_UPDATE_VERSION}))" ];  then
+            ACTION_UPDATE_VL805=1
+         else
+            VL805_UPDATE_IMAGE=""
+         fi
+      fi
+   else
+      VL805_UPDATE_VERSION="${VL805_CURRENT_VERSION}"
+      ACTION_UPDATE_VL805=0
+   fi
+}
+
+checkAndApply()
+{
+   lookupVersionInfo
+   removePreviousUpdates
+
+   # Restrict the automatic updates to the EEPROM types selected by the -A option.
+   if [ "${AUTO_UPDATE_VL805}" != 1 ]; then
+      ACTION_UPDATE_VL805=0
+      VL805_UPDATE_IMAGE=""
+   fi
+   if [ "${AUTO_UPDATE_BOOTLOADER}" != 1 ]; then
+      ACTION_UPDATE_BOOTLOADER=0
+      BOOTLOADER_UPDATE_IMAGE=""
+   fi
+
+   if [ "${ACTION_UPDATE_BOOTLOADER}" = 1 ] || [ "${ACTION_UPDATE_VL805}" = 1 ]; then
+      echo "*** PREPARING EEPROM UPDATES ***"
+      echo ""
+
+      printVersions
+      applyUpdate
+   else
+      printVersions
+   fi
+}
+
+fileUpdate()
+{
+   removePreviousUpdates
+   echo "*** CREATED UPDATE ${BOOTLOADER_UPDATE_IMAGE} ${VL805_UPDATE_IMAGE} ***"
+   echo
+
+   if [ -n "${BOOTLOADER_UPDATE_IMAGE}" ]; then
+      [ -f "${BOOTLOADER_UPDATE_IMAGE}" ] || die "Bootloader image \"${BOOTLOADER_UPDATE_IMAGE}\" not found"
+   fi
+
+   if [ -n "${VL805_UPDATE_IMAGE}" ]; then
+      [ -f "${VL805_UPDATE_IMAGE}" ] || die "VL805 image \"${VL805_UPDATE_IMAGE}\" not found"
+   fi
+
+   applyUpdate
+}
+
+removePreviousUpdates()
+{
+   if [ "$(id -u)" = "0" ]; then
+      findBootFS
+
+      (
+         # Remove any stale recovery.bin files or EEPROM images
+         # N.B. recovery.bin is normally ignored by the ROM if is not a valid
+         # executable but it's best to not have the file at all.
+         rm -f "${BOOTFS}/recovery.bin"
+         rm -f "${BOOTFS}/pieeprom.bin" "${BOOTFS}/pieeprom.upd" "${BOOTFS}/pieeprom.sig"
+         rm -f "${BOOTFS}/vl805.bin" "${BOOTFS}/vl805.sig"
+         # Case insensitive for FAT bootfs
+         find "${BOOTFS}" -maxdepth 1 -type f -follow -iname "recovery.*" -regex '.*\.[0-9][0-9][0-9]$' -exec rm -f {} \;
+      ) || die "Failed to remove previous update files"
+   fi
+}
+
+checkVersion()
+{
+   lookupVersionInfo
+
+   if [ "${ACTION_UPDATE_BOOTLOADER}" = 1 ] || [ "${ACTION_UPDATE_VL805}" = 1 ]; then
+      echo "*** UPDATE AVAILABLE ***"
+      printVersions
+      write_status_info "EXIT_UPDATE_REQUIRED"
+      exit ${EXIT_UPDATE_REQUIRED}
+   else
+      printVersions
+      write_status_info "EXIT_SUCCESS"
+      exit ${EXIT_SUCCESS}
+   fi
+}
+
+write_status_info()
+{
+   [ -z "${MACHINE_OUTPUT}" ] && return 0
+
+   exit_code="${1:-EXIT_FAILED}"
+   bootloader_cur="${BOOTLOADER_CURRENT_VERSION:-0}"
+   bootloader_new="${BOOTLOADER_UPDATE_VERSION:-0}"
+   vl805_cur="${VL805_CURRENT_VERSION}"
+   vl805_new="${VL805_UPDATE_VERSION}"
+   min_ver=${BOOTLOADER_AUTO_UPDATE_MIN_VERSION:-0}
+
+    if [ "${JSON_OUTPUT}" = "no" ]; then
+      [ "${HAVE_VL805_EEPROM}" = "0" ] && vl805_eeprom="no" || vl805_eeprom="yes"
+      cat > "${MACHINE_OUTPUT}" <<EOF
+EXITCODE="${exit_code}"
+BOOTLOADER_AUTO_UPDATE_MIN_VERSION=${min_ver}
+BOOTLOADER_CURRENT=${bootloader_cur}
+BOOTLOADER_LATEST=${bootloader_new}
+VL805_CURRENT="${vl805_cur}"
+VL805_LATEST="${vl805_new}"
+VL805_EEPROM="${vl805_eeprom}"
+EOF
+   else
+      [ "${HAVE_VL805_EEPROM}" = "0" ] && vl805_eeprom="false" || vl805_eeprom="true"
+      cat > "${MACHINE_OUTPUT}" <<EOF
+{
+  "EXITCODE": "${exit_code}",
+  "BOOTLOADER_AUTO_UPDATE_MIN_VERSION": ${min_ver},
+  "BOOTLOADER_CURRENT": ${bootloader_cur},
+  "BOOTLOADER_LATEST": ${bootloader_new},
+  "VL805_CURRENT": "${vl805_cur}",
+  "VL805_LATEST": "${vl805_new}",
+  "VL805_EEPROM": ${vl805_eeprom}
+}
+EOF
+   fi
+   return 0
+}
+
+AUTO_UPDATE_BOOTLOADER=0
+AUTO_UPDATE_VL805=0
+SILENT_UPDATE=0
+MACHINE_OUTPUT=""
+JSON_OUTPUT="no"
+# Ignore dpkg checksums by default so that rpi-update can install new binaries into /lib/firmware
+IGNORE_DPKG_CHECKSUMS=${IGNORE_DPKG_CHECKSUMS:-1}
+PACKAGE_INFO_DIR="/var/lib/dpkg/info/"
+if [ ! -d "${PACKAGE_INFO_DIR}" ]; then
+   IGNORE_DPKG_CHECKSUMS=1
+fi
+
+
+while getopts A:abdhilf:m:ju:rs option; do
+   case "${option}" in
+   A)
+      if [ "${OPTARG}" = "bootloader" ]; then
+         AUTO_UPDATE_BOOTLOADER=1
+      elif [ "${OPTARG}" = "vl805" ]; then
+         AUTO_UPDATE_VL805=1
+      else
+         die "Unknown update mode: ${OPTARG}"
+      fi
+      ;;
+   a) AUTO_UPDATE_BOOTLOADER=1
+      AUTO_UPDATE_VL805=1
+      ;;
+   b)
+      findBootFS
+      echo "${BOOTFS}"
+      exit 0
+      ;;
+   d) OVERWRITE_CONFIG=1
+      ;;
+   f) BOOTLOADER_UPDATE_IMAGE="${OPTARG}"
+      ;;
+   i)
+      # Script default is 1 but this could have been set to zero in the defaults file
+      IGNORE_DPKG_CHECKSUMS=1
+      ;;
+   j) JSON_OUTPUT="yes"
+      ;;
+   l)
+      checkDependencies
+      getBootloaderUpdateVersion
+      echo "${BOOTLOADER_UPDATE_IMAGE}"
+      exit 0
+      ;;
+   m) MACHINE_OUTPUT="${OPTARG}"
+      ;;
+   h) usage
+      ;;
+   r) [ "$(id -u)" = "0" ] || die "* Must be run as root - try 'sudo rpi-eeprom-update -r'"
+      echo "Removing temporary files from previous EEPROM update"
+      checkDependencies
+      removePreviousUpdates
+      exit 0
+      ;;
+   s) SILENT_UPDATE=1
+      ;;
+   u) VL805_UPDATE_IMAGE="${OPTARG}"
+      ;;
+   *) echo "Unknown argument \"${option}\""
+      usage
+      ;;
+   esac
+done
+
+checkDependencies
+if [ "${AUTO_UPDATE_BOOTLOADER}" = 1 ] || [ "${AUTO_UPDATE_VL805}" = 1 ]; then
+   if getBootloaderConfig | grep FREEZE_VERSION=1; then
+      echo "EEPROM version is frozen. Skipping automatic update"
+      exit ${EXIT_EEPROM_FROZEN}
+   else
+      checkAndApply
+   fi
+elif [ -n "${BOOTLOADER_UPDATE_IMAGE}" ] || [ -n "${VL805_UPDATE_IMAGE}" ]; then
+   fileUpdate
+else
+   checkVersion
+fi
