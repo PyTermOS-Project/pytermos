@@ -11,7 +11,7 @@ Perfect for students and enthusiasts looking to delve into the workings of a Lin
 ## PyTerm CLI Interface.
 PyTerm CLI Interface is very easy to use. Especially for people who think bash is hard to learn.
 To see the commands, you can type ? or help in the PyTerm CLI Interface.
-If you need all the usage and commands, please go to [docs.pytermos.com/install.html](docs.pytermos.com)/install.html
+If you need all the usage and commands, please go to [faq.pytermos.com](faq.pytermos.com)
 ## Community Driven
 Open to contributions and improvements. You can fork or download the .zip file to make changes.
 # Installation
@@ -51,6 +51,9 @@ For support, feedback, or queries, please reach me out at markpavlenkos@icloud.c
 PyTermOS is licensed under the MIT license.
 # The pytermos.com website has been transfered to another repo on 12 May 2024.
 [Real pytermos.com website repo](https://github.com/MarkPavlenko/PyTermOSWeb)
-[docs.pytermos.com subdomain website repo](https://github.com/MarkPavlenko/PyTermOSDocs)
+
+[faq.pytermos.com subdomain website repo](https://github.com/MarkPavlenko/PyTermOSFAQ)
+
 [forums.pytermos.com subdomain website repo](https://github.com/MarkPavlenko/PyTermOSForums)
+
 ### S0rry!
