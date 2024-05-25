@@ -1,0 +1,1 @@
+The Kernel.img files are unopenable and only for the system usage. They were taken from Raspberry Pi OS Lite so everything would work good on RPIs. 
