@@ -46,7 +46,12 @@ PyTermOS is open source and freely available under the MIT License. See the LICE
 # Releases page
 To see all the releases, please go to this [https://github.com/MarkPavlenko/PyTermOS/releases](https://github.com/MarkPavlenko/PyTermOS/releases) page.
 ## Contact
-For support, feedback, or queries, please reach me out at markpavlenkos@icloud.com (main) or at markpavlenkos@gmail.com (trash).
+For support, feedback, or queries, please reach me out at:
+#### For private chat with me
+### markpavlenkos@icloud.com (main) 
+### markpavlenkos@gmail.com (trash)
+#### For chat with the PyTermOS support
+### contact@pytermos.com
 # License
 PyTermOS is licensed under the MIT license.
 # The pytermos.com website has been transfered to another repo on 12 May 2024.
