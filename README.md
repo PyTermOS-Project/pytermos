@@ -42,7 +42,7 @@ When the loading ends, you will be greeted by the [PyTerm](markpavlenko.github.i
 # Contributing
 We welcome contributions from the community! Whether it's bug fixes, feature additions, or improvements to documentation, your help is appreciated. Please read CONTRIBUTING.md for details on the process for submitting pull requests to me.
 # License
-PyTermOS is open source and freely available under the MIT License. See the LICENSE file for more details.
+PyTermOS is open source and freely available under the GNU GPL v3 License. See the LICENSE file for more details.
 # Releases page
 To see all the releases, please go to this [https://github.com/MarkPavlenko/PyTermOS/releases](https://github.com/MarkPavlenko/PyTermOS/releases) page.
 ## Contact
@@ -52,8 +52,6 @@ For support, feedback, or queries, please reach me out at:
 ### markpavlenkos@gmail.com (trash)
 #### For chat with the PyTermOS support
 ### contact@pytermos.com
-# License
-PyTermOS is licensed under the GNU GPL v3 license.
 # The pytermos.com website has been transfered to another repo on 12 May 2024.
 [Real pytermos.com website repo](https://github.com/MarkPavlenko/pytermos.com)
 
