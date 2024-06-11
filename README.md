@@ -53,7 +53,7 @@ For support, feedback, or queries, please reach me out at:
 #### For chat with the PyTermOS support
 ### contact@pytermos.com
 # License
-PyTermOS is licensed under the MIT license.
+PyTermOS is licensed under the GNU GPL v3 license.
 # The pytermos.com website has been transfered to another repo on 12 May 2024.
 [Real pytermos.com website repo](https://github.com/MarkPavlenko/pytermos.com)
 
