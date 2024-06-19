@@ -1,5 +1,6 @@
 # PyTermOS
-![image](https://github.com/MarkPavlenko/PyTermOS/assets/109904787/c3d32466-7f25-453b-81bb-b19caedba08b)
+
+![PyTermOS-Logo](https://github.com/PyTermOS-Project/PyTermOS/assets/109904787/807f10fe-6644-4974-9645-8a513c417b78)
 
 PyTermOS is a lightweight, Linux-Based operating system designed specifically for educational purposes and older hardware, emphasizing minimalism and efficiency. It provides lot's of great everyday functions like Supercommands and other. Here, at PyTermOS you can see the power of Linux-Based operating systems.
 # Features
