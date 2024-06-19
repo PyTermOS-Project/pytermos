@@ -35,11 +35,11 @@ Insert the Micro SD card into your Raspberry Pi.
 Connect your Raspberry Pi to power and a display.
 Wait until the system starts.
 ### Installed!!
-After installing PyTermOS, you can interact with the system through the [PyTerm](markpavlenko.github.io/PyTerm) command line interface (PTCLI).
+After installing PyTermOS, you can interact with the system through the PyTerm command line interface (PTCLI).
 ## Starting the CLI
 Turn on your Raspberry Pi.
 Wait until the system starts.
-When the loading ends, you will be greeted by the [PyTerm](markpavlenko.github.io/PyTerm) command prompt.
+When the loading ends, you will be greeted by the PyTerm command prompt.
 # Contributing
 We welcome contributions from the community! Whether it's bug fixes, feature additions, or improvements to documentation, your help is appreciated. Please read CONTRIBUTING.md for details on the process for submitting pull requests to me.
 # License
