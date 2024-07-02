@@ -26,7 +26,7 @@ and
 
 Internet connection for initial setup and downloads.
 ## Installation Guide
-Download the latest release of PyTermOS from [iCloud](https://www.icloud.com/iclouddrive/069C_WVIjLR8Dou0oQZ5_f6Pg#PyTermOS_Versions) website.
+Download the latest release of PyTermOS from PyTermOS [website](https://pytermos.com/start.html) or the beta from our [Patreon](https://patreon.com/PyTermOS)
 ### Write the image to an SD card
 Download the .img file and make sure it is not corrupt.
 Use software like Balena Etcher and install the .img on your device.
