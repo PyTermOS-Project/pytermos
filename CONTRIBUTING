@@ -7,7 +7,7 @@ Getting Started
 Fork the Repository: Start by forking the PyTermOS repository on GitHub.
 Clone Your Fork: Clone your fork to your local machine so you can do your work.
 ```bash
-git clone https://github.com/MarkPavlenko/PyTermOS.git
+git clone https://github.com/PyTermOS-Project/juice.git
 cd PyTermOS 
 ```
 Create a New Branch: For each new feature or bug fix, create a new branch based on the main branch.
