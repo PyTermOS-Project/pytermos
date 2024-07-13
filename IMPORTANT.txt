@@ -1,1 +1,0 @@
-All the files provided under this repository are mixed up with all the PyTermOS versions. Don't try to install and create a bootable image for the system to work. All the versions and bootable images are provided on the pytermos.com/install.html website and on the releases page. 
